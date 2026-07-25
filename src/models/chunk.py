@@ -1,2 +1,55 @@
-from sqlalchemy.orm import Mapped, mapped_column
-from src.models.base import Base
+import uuid
+from datetime import datetime
+from sqlalchemy import ForeignKey, String, Integer, Text, BigInteger
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
+from src.core.config import settings
+from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
+
+class ParentChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "parent_chunks"
+
+    article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    section_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g., "Section 2.1"
+
+    article: Mapped["Article"] = relationship("Article")
+    child_chunks: Mapped[list["ArticleChunk"]] = relationship(
+        "ArticleChunk", back_populates="parent_chunk", cascade="all, delete-orphan"
+    )
+
+class ArticleChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "article_chunks"
+
+    article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
+    parent_chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("parent_chunks.id", ondelete="CASCADE"), nullable=False)
+    chunk_text: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Vector size: dynamically loaded from configuration settings
+    embedding: Mapped[list[float]] = mapped_column(Vector(settings.EMBEDDING_DIMENSION), nullable=True)
+    embedding_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    embedding_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    
+    # Denormalized permission and organizational metadata for O(1) retrieval
+    # Represents a bitwise OR of authorized AccessGroup.bitmask_positions
+    access_group_bitmap: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
+    department_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(50), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(50), nullable=False)
+    
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    article: Mapped["Article"] = relationship("Article")
+    parent_chunk: Mapped[ParentChunk] = relationship("ParentChunk", back_populates="child_chunks")
+    metadata_fields: Mapped[list["ChunkMetadata"]] = relationship(
+        "ChunkMetadata", back_populates="chunk", cascade="all, delete-orphan"
+    )
+
+class ChunkMetadata(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "chunk_metadata"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("article_chunks.id", ondelete="CASCADE"), nullable=False)
+    key: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    value: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    chunk: Mapped[ArticleChunk] = relationship("ArticleChunk", back_populates="metadata_fields")

@@ -1,3 +1,9 @@
+import bcrypt
+if not hasattr(bcrypt, "__about__"):
+    class About:
+        __version__ = bcrypt.__version__
+    bcrypt.__about__ = About()
+
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from jose import jwt

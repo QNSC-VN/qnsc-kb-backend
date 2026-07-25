@@ -1,2 +1,80 @@
-from sqlalchemy.orm import Mapped, mapped_column
-from src.models.base import Base
+import uuid
+from datetime import datetime
+from typing import Any
+from sqlalchemy import Table, Column, ForeignKey, String, Integer, Text, DateTime, JSON, UniqueConstraint
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
+
+# Association table for Article <-> AccessGroup (Many-to-Many)
+article_access = Table(
+    "article_access",
+    Base.metadata,
+    Column("article_id", ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True),
+    Column("group_id", ForeignKey("access_groups.id", ondelete="CASCADE"), primary_key=True),
+)
+
+class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "articles"
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False)
+    dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    domain: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    # POLICY, SOP, DECISION, FAQ, RCA, HOWTO, PLAYBOOK, REFERENCE
+    type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    # public, internal, confidential, restricted
+    sensitivity: Mapped[str] = mapped_column(String(50), default="internal", nullable=False)
+    language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
+    owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # draft, pending_review, published, archived
+    status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    last_reviewed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_review: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    owner: Mapped["User | None"] = relationship("User")
+    access_groups: Mapped[list["AccessGroup"]] = relationship(
+        "AccessGroup", secondary=article_access
+    )
+    versions: Mapped[list["ArticleVersion"]] = relationship(
+        "ArticleVersion", back_populates="article", cascade="all, delete-orphan"
+    )
+    sources: Mapped[list["DocumentSource"]] = relationship(
+        "DocumentSource", back_populates="article", cascade="all, delete-orphan"
+    )
+    tags: Mapped[list["ArticleTag"]] = relationship(
+        "ArticleTag", back_populates="article", cascade="all, delete-orphan"
+    )
+
+class ArticleVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "article_versions"
+
+    article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    edited_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    article: Mapped[Article] = relationship("Article", back_populates="versions")
+    editor: Mapped["User | None"] = relationship("User")
+
+class ArticleTag(Base, UUIDPrimaryKeyMixin):
+    __tablename__ = "article_tags"
+    __table_args__ = (
+        UniqueConstraint("article_id", "tag", name="uq_article_tag"),
+    )
+
+    article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
+    tag: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    article: Mapped[Article] = relationship("Article", back_populates="tags")
+
+class DocumentSource(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "document_sources"
+
+    article_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("articles.id", ondelete="SET NULL"), nullable=True)
+    source_system: Mapped[str] = mapped_column(String(100), nullable=False)  # google_drive, sharepoint, manual
+    source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    article: Mapped[Article | None] = relationship("Article", back_populates="sources")
