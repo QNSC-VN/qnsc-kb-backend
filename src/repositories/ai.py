@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Sequence
 from sqlalchemy import select, and_, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.models.ai import AiUsageLog, AiCache, AiFeedback, PromptVersion, AiConversation, AiMessage
 import json
@@ -78,6 +79,14 @@ class AIRepository:
         await self.db.delete(conversation)
         await self.db.commit()
 
+    async def rename_conversation(self, conversation: AiConversation, title: str) -> AiConversation:
+        conversation.title = title[:255].strip() or "New conversation"
+        conversation.updated_at = datetime.utcnow()
+        self.db.add(conversation)
+        await self.db.commit()
+        await self.db.refresh(conversation)
+        return conversation
+
     # AI Cache
     async def get_cached(self, question_hash: str, user_bitmask: int) -> AiCache | None:
         # Match cache key/hash and ensure cache is not expired
@@ -97,9 +106,32 @@ class AIRepository:
         return result.scalar_one_or_none()
 
     async def cache_answer(self, cache: AiCache) -> AiCache:
-        self.db.add(cache)
+        # Multiple tabs/retries can finish the same question at nearly the
+        # same time. The cache key is intentionally unique, so use a
+        # PostgreSQL upsert instead of allowing a duplicate-key error to turn
+        # a successfully generated answer into a failed chat request.
+        cache_id = cache.id or uuid.uuid4()
+        statement = pg_insert(AiCache).values(
+            id=cache_id,
+            cache_key=cache.cache_key,
+            question_hash=cache.question_hash,
+            access_group_bitmap=cache.access_group_bitmap,
+            answer=cache.answer,
+            citations=cache.citations,
+            expires_at=cache.expires_at,
+        ).on_conflict_do_update(
+            index_elements=[AiCache.cache_key],
+            set_={
+                "question_hash": cache.question_hash,
+                "access_group_bitmap": cache.access_group_bitmap,
+                "answer": cache.answer,
+                "citations": cache.citations,
+                "expires_at": cache.expires_at,
+            },
+        ).returning(AiCache.id)
+        result = await self.db.execute(statement)
         await self.db.commit()
-        await self.db.refresh(cache)
+        cache.id = result.scalar_one()
         return cache
 
     # Feedback

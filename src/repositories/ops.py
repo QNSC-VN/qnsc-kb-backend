@@ -69,6 +69,10 @@ class OpsRepository:
         result = await self.db.execute(select(EvalQuestion))
         return result.scalars().all()
 
+    async def get_eval_question(self, question_id: uuid.UUID) -> EvalQuestion | None:
+        result = await self.db.execute(select(EvalQuestion).where(EvalQuestion.id == question_id))
+        return result.scalar_one_or_none()
+
     async def create_eval_run(self, er: EvalRun) -> EvalRun:
         self.db.add(er)
         await self.db.commit()

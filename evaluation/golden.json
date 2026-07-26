@@ -1,0 +1,18 @@
+[
+  {
+    "id": "grounded-policy",
+    "answer": "Employees must submit travel requests before booking flights.",
+    "expected_answer": "Employees must submit travel requests before booking flights.",
+    "context": "The corporate travel policy requires employees to submit a travel request before booking flights.",
+    "retrieved_chunk_ids": ["travel-policy-1"],
+    "expected_chunk_ids": ["travel-policy-1"]
+  },
+  {
+    "id": "grounded-sop",
+    "answer": "Restart the service, verify health checks, and escalate if the checks remain red.",
+    "expected_answer": "Restart the service, verify health checks, and escalate if the checks remain red.",
+    "context": "The outage SOP says to restart the service, verify health checks, and escalate when checks remain red.",
+    "retrieved_chunk_ids": ["outage-sop-1"],
+    "expected_chunk_ids": ["outage-sop-1"]
+  }
+]

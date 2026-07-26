@@ -51,6 +51,9 @@ class PermissionService:
     def can_view_article(cls, user: User, article: Article) -> bool:
         if user.role == "Admin":
             return True
+
+        if user.role == "CEO" and user.company_domain == article.company_domain:
+            return True
             
         if user.role == "Department Owner" and user.dept == article.dept:
             return True
@@ -70,6 +73,9 @@ class PermissionService:
     @classmethod
     def can_edit_article(cls, user: User, article: Article) -> bool:
         if user.role == "Admin":
+            return True
+
+        if user.role == "CEO" and user.company_domain == article.company_domain:
             return True
 
         if user.role == "Department Owner" and user.dept == article.dept:

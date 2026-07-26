@@ -1,0 +1,28 @@
+name: QNSC backend CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-and-evaluate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Poetry
+        run: pipx install poetry
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+      - name: Compile backend
+        run: python -m compileall -q src
+      - name: Run unit tests
+        env:
+          PYTHONPATH: .
+        run: poetry run pytest -q
+      - name: Run RAG regression gate
+        env:
+          PYTHONPATH: .
+        run: poetry run python scripts/run_eval.py --input evaluation/golden.json

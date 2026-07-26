@@ -5,7 +5,7 @@ from src.models.chunk import ParentChunk, ArticleChunk, ChunkMetadata
 from src.models.interaction import Comment, Vote, Bookmark
 from src.models.governance import PendingDraft, Gap, AuditLog
 from src.models.ai import AiUsageLog, AiCache, AiFeedback, PromptVersion, AiConversation, AiMessage
-from src.models.ops import Connector, ConnectorJob, NotificationQueue, DeadLetterJob, EvalQuestion, EvalRun
+from src.models.ops import Connector, ConnectorJob, NotificationQueue, DeadLetterJob, SearchLog, ApiRequestMetric, FeatureFlag, EvalQuestion, EvalRun
 
 __all__ = [
     "Base",
@@ -36,6 +36,9 @@ __all__ = [
     "ConnectorJob",
     "NotificationQueue",
     "DeadLetterJob",
+    "SearchLog",
+    "ApiRequestMetric",
+    "FeatureFlag",
     "EvalQuestion",
     "EvalRun",
 ]

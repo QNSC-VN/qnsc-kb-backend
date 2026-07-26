@@ -12,10 +12,12 @@ class ParentChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     section_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g., "Section 2.1"
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     article: Mapped["Article"] = relationship("Article")
     child_chunks: Mapped[list["ArticleChunk"]] = relationship(
-        "ArticleChunk", back_populates="parent_chunk", cascade="all, delete-orphan"
+        "ArticleChunk", back_populates="parent_chunk", cascade="all, delete-orphan",
+        order_by="ArticleChunk.chunk_index",
     )
 
 class ArticleChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -38,6 +40,7 @@ class ArticleChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     visibility: Mapped[str] = mapped_column(String(50), nullable=False)
     
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     article: Mapped["Article"] = relationship("Article")
     parent_chunk: Mapped[ParentChunk] = relationship("ParentChunk", back_populates="child_chunks")

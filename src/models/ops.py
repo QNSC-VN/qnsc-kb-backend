@@ -12,6 +12,8 @@ class Connector(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     status: Mapped[str] = mapped_column(String(50), default="active", nullable=False)  # active, paused
     last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    company_domain: Mapped[str] = mapped_column(String(255), index=True, nullable=False, default="local")
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
     jobs: Mapped[list["ConnectorJob"]] = relationship("ConnectorJob", back_populates="connector", cascade="all, delete-orphan")
 
@@ -41,6 +43,36 @@ class DeadLetterJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     error: Mapped[str] = mapped_column(Text, nullable=False)
     failed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class SearchLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "search_logs"
+
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    query: Mapped[str] = mapped_column(Text, nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    user: Mapped["User | None"] = relationship("User")
+
+
+class ApiRequestMetric(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "api_request_metrics"
+
+    request_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    method: Mapped[str] = mapped_column(String(12), nullable=False)
+    path: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    duration_ms: Mapped[float] = mapped_column(Float, nullable=False)
+
+
+class FeatureFlag(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "feature_flags"
+
+    key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(default=True, nullable=False)
+    rollout_percent: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    department: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 class EvalQuestion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "eval_questions"

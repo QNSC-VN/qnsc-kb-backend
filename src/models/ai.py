@@ -16,6 +16,7 @@ class AiUsageLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     llm_model: Mapped[str] = mapped_column(String(100), nullable=False)
     retrieval_version: Mapped[str] = mapped_column(String(50), nullable=False)
     reranker_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    retrieved_chunk_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     user: Mapped["User | None"] = relationship("User")
     feedback: Mapped[list["AiFeedback"]] = relationship("AiFeedback", back_populates="usage_log", cascade="all, delete-orphan")

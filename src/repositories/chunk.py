@@ -1,4 +1,5 @@
 import uuid
+import re
 import structlog
 from typing import Sequence
 from sqlalchemy import select, delete, update, and_, or_, text, func
@@ -6,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.models.chunk import ParentChunk, ArticleChunk, ChunkMetadata
 from src.models.article import Article
+from src.core.config import settings
 
 logger = structlog.get_logger()
 
@@ -82,12 +84,26 @@ class ChunkRepository:
             ArticleChunk.access_group_bitmap.op("&")(user_bitmask) != 0,
             # Join with articles to check status is published
             Article.status == "published"
+            ,Article.lifecycle_status == "active"
         ]
+
+        if filters.get("company_domain"):
+            where_clauses.append(Article.company_domain == filters["company_domain"])
 
         if filters.get("dept"):
             where_clauses.append(ArticleChunk.department_id == filters["dept"])
         if filters.get("sensitivity"):
             where_clauses.append(ArticleChunk.sensitivity == filters["sensitivity"])
+        if filters.get("type"):
+            where_clauses.append(Article.type == filters["type"])
+        if filters.get("status"):
+            where_clauses.append(Article.status == filters["status"])
+        if filters.get("language"):
+            where_clauses.append(Article.language == filters["language"])
+        if filters.get("date_from"):
+            where_clauses.append(Article.created_at >= filters["date_from"])
+        if filters.get("date_to"):
+            where_clauses.append(Article.created_at <= filters["date_to"])
 
         diagnostic_stmt = (
             select(func.count(ArticleChunk.id))
@@ -125,11 +141,16 @@ class ChunkRepository:
             vector_stmt = (
                 select(ArticleChunk)
                 .join(Article, Article.id == ArticleChunk.article_id)
-                .where(and_(*where_clauses))
+                .where(
+                    and_(
+                        *where_clauses,
+                        ArticleChunk.embedding.cosine_distance(query_embedding) <= settings.VECTOR_DISTANCE_THRESHOLD,
+                    )
+                )
                 .order_by(ArticleChunk.embedding.cosine_distance(query_embedding))
-                .limit(30)
+                .limit(max(30, limit * 6))
                 .options(
-                    selectinload(ArticleChunk.parent_chunk),
+                    selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks),
                     selectinload(ArticleChunk.article),
                 )
             )
@@ -143,21 +164,27 @@ class ChunkRepository:
 
         # 2. Full-Text Search (keyword)
         # Fall back to ILIKE if postgres fails or for simplicity, but we can do proper FTS:
+        keyword_terms = [term for term in re.findall(r"[\w'-]+", query.lower()) if len(term) > 1]
+        keyword_conditions = [ArticleChunk.chunk_text.ilike(f"%{term}%") for term in keyword_terms]
+        keyword_conditions.extend(Article.title.ilike(f"%{term}%") for term in keyword_terms)
         keyword_stmt = (
             select(ArticleChunk)
             .join(Article, Article.id == ArticleChunk.article_id)
             .where(
                 and_(
                     *where_clauses,
-                    or_(
-                        ArticleChunk.chunk_text.ilike(f"%{query}%"),
-                        Article.title.ilike(f"%{query}%")
-                    )
+                    or_(*keyword_conditions) if keyword_conditions else ArticleChunk.chunk_text.ilike(f"%{query}%")
                 )
+            )
+            .order_by(
+                func.ts_rank_cd(
+                    func.to_tsvector("simple", func.concat_ws(" ", ArticleChunk.chunk_text, Article.title)),
+                    func.plainto_tsquery("simple", query),
+                ).desc()
             )
             .limit(30)
             .options(
-                selectinload(ArticleChunk.parent_chunk),
+                selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks),
                 selectinload(ArticleChunk.article),
             )
         )

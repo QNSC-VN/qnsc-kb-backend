@@ -17,7 +17,8 @@ class ArticleRepository:
             .options(
                 selectinload(Article.access_groups),
                 selectinload(Article.tags),
-                selectinload(Article.owner)
+                selectinload(Article.owner),
+                selectinload(Article.sources),
             )
         )
         return result.scalar_one_or_none()
@@ -34,12 +35,15 @@ class ArticleRepository:
         stmt = select(Article).options(
             selectinload(Article.access_groups),
             selectinload(Article.tags),
-            selectinload(Article.owner)
+            selectinload(Article.owner),
+            selectinload(Article.sources),
         )
         
         # Enforce RBAC at the query level (unless user is Admin)
-        filters = []
-        if user.role != "Admin":
+        filters = [Article.lifecycle_status == "active"]
+        if user.role == "CEO":
+            filters.append(Article.company_domain == user.company_domain)
+        elif user.role != "Admin":
             user_group_ids = [g.id for g in user.groups]
             
             # Non-admins see:
@@ -90,6 +94,38 @@ class ArticleRepository:
             stmt = stmt.where(and_(*filters))
 
         result = await self.db.execute(stmt.order_by(Article.created_at.desc()))
+        return result.scalars().all()
+
+    async def list_related(self, user: User, article: Article, limit: int = 6) -> Sequence[Article]:
+        """Return published, authorized articles related by taxonomy or tags."""
+        stmt = select(Article).options(
+            selectinload(Article.access_groups),
+            selectinload(Article.tags),
+            selectinload(Article.owner),
+            selectinload(Article.sources),
+        ).where(
+            Article.id != article.id,
+            Article.status == "published",
+            Article.lifecycle_status == "active",
+            or_(
+                Article.dept == article.dept,
+                Article.domain == article.domain,
+                Article.tags.any(ArticleTag.tag.in_(
+                    select(ArticleTag.tag).where(ArticleTag.article_id == article.id)
+                )),
+            ),
+        )
+        if user.role == "CEO":
+            stmt = stmt.where(Article.company_domain == user.company_domain)
+        elif user.role != "Admin":
+            permission_conditions = [Article.sensitivity == "public", Article.owner_id == user.id]
+            group_ids = [group.id for group in user.groups]
+            if group_ids:
+                permission_conditions.append(Article.access_groups.any(article_access.c.group_id.in_(group_ids)))
+            if user.role == "Department Owner" and user.dept:
+                permission_conditions.append(Article.dept == user.dept)
+            stmt = stmt.where(or_(*permission_conditions))
+        result = await self.db.execute(stmt.order_by(Article.created_at.desc()).limit(limit))
         return result.scalars().all()
 
     async def create(self, article: Article) -> Article:

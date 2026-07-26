@@ -26,6 +26,7 @@ class ReviewService:
             raise HTTPException(status_code=403, detail="Not authorized to set review schedule")
 
         article.next_review = next_review_date
+        article.needs_update = False
         updated_article = await self.article_repo.update(article)
         
         await event_bus.publish("ReviewScheduled", {"article_id": str(article_id), "next_review": next_review_date.isoformat()})
@@ -47,6 +48,9 @@ class ReviewService:
         for article in articles:
             if article.next_review and article.next_review < now:
                 overdue_ids.append(str(article.id))
+                if not article.needs_update:
+                    article.needs_update = True
+                    await self.article_repo.update(article)
                 await event_bus.publish("ReviewExpired", {"article_id": str(article.id)})
                 
         return overdue_ids

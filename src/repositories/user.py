@@ -53,6 +53,16 @@ class UserRepository:
         )
         return result.scalars().all()
 
+    async def list_users(self) -> Sequence[User]:
+        result = await self.db.execute(select(User).order_by(User.company_domain, User.name))
+        return result.scalars().all()
+
+    async def update(self, user: User) -> User:
+        self.db.add(user)
+        await self.db.commit()
+        await self.db.refresh(user)
+        return user
+
     async def update_user_groups(self, user: User, groups: list[AccessGroup]) -> User:
         user.groups = groups
         self.db.add(user)

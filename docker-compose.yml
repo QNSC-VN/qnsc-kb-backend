@@ -37,6 +37,8 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+      - source_data:/app/storage/sources
+      - ./connector_sources:/app/storage/connectors
     command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/qnsc_kb
@@ -66,3 +68,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  source_data:

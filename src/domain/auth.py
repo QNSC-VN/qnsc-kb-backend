@@ -1,7 +1,7 @@
 import uuid
 from datetime import timedelta
 from fastapi import HTTPException, status
-from src.core.security import verify_password, get_password_hash, create_access_token
+from src.core.security import verify_password, get_password_hash, create_access_token, create_refresh_token
 from src.core.config import settings
 from src.models.user import User
 from src.repositories.user import UserRepository
@@ -26,7 +26,14 @@ class AuthService:
             )
         return user
 
-    async def register_user(self, email: str, name: str, password: str, dept: str | None = None, role: str = "Staff") -> User:
+    async def register_user(self, email: str, name: str, password: str, dept: str | None = None, role: str = "Staff", allow_privileged_role: bool = False) -> User:
+        email = email.strip().lower()
+        company_domain = email.rsplit("@", 1)[-1] if "@" in email else "local"
+        allowed_domains = {item.strip().lower() for item in settings.ALLOWED_EMAIL_DOMAINS.split(",") if item.strip()}
+        if allowed_domains and company_domain not in allowed_domains:
+            raise HTTPException(status_code=403, detail="Use an approved company email address")
+        if role not in {"Admin", "CEO", "Department Owner", "Reviewer", "Staff"}:
+            raise HTTPException(status_code=422, detail="Invalid role")
         existing = await self.user_repo.get_by_email(email)
         if existing:
             raise HTTPException(
@@ -39,8 +46,9 @@ class AuthService:
             email=email,
             name=name,
             password_hash=hashed_password,
+            company_domain=company_domain,
             dept=dept,
-            role=role
+            role=role if allow_privileged_role else "Staff"
         )
         
         # Seed access group mapping
@@ -72,3 +80,6 @@ class AuthService:
         # Save email as subject
         expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
         return create_access_token(subject=user.email, expires_delta=expires)
+
+    def create_refresh_token(self, user: User) -> str:
+        return create_refresh_token(subject=user.email)

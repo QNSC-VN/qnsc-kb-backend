@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any
-from sqlalchemy import Table, Column, ForeignKey, String, Integer, Text, DateTime, JSON, UniqueConstraint
+from sqlalchemy import Table, Column, ForeignKey, String, Integer, Text, DateTime, JSON, UniqueConstraint, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -20,6 +20,7 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    company_domain: Mapped[str] = mapped_column(String(255), index=True, nullable=False, default="local")
     # POLICY, SOP, DECISION, FAQ, RCA, HOWTO, PLAYBOOK, REFERENCE
     type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     # public, internal, confidential, restricted
@@ -28,9 +29,14 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # draft, pending_review, published, archived
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
+    lifecycle_status: Mapped[str] = mapped_column(String(30), default="active", nullable=False, index=True)
+    related_article_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     last_reviewed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_review: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    needs_update: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    index_status: Mapped[str] = mapped_column(String(30), default="pending", nullable=False)
+    index_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     owner: Mapped["User | None"] = relationship("User")
     access_groups: Mapped[list["AccessGroup"]] = relationship(
@@ -45,6 +51,10 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     tags: Mapped[list["ArticleTag"]] = relationship(
         "ArticleTag", back_populates="article", cascade="all, delete-orphan"
     )
+
+    @property
+    def source_available(self) -> bool:
+        return any(source.storage_key for source in self.sources)
 
 class ArticleVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "article_versions"
@@ -75,6 +85,10 @@ class DocumentSource(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_system: Mapped[str] = mapped_column(String(100), nullable=False)  # google_drive, sharepoint, manual
     source_ref: Mapped[str] = mapped_column(String(512), nullable=False)
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    original_filename: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    mime_type: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    page_texts: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     article: Mapped[Article | None] = relationship("Article", back_populates="sources")

@@ -7,6 +7,8 @@ from sqlalchemy.orm import selectinload
 from src.models.governance import PendingDraft, Gap, AuditLog
 from src.models.article import Article
 from src.models.interaction import Vote
+from src.models.ops import SearchLog, ApiRequestMetric
+from src.models.ai import AiUsageLog
 
 class GovernanceRepository:
     def __init__(self, db: AsyncSession):
@@ -121,6 +123,28 @@ class GovernanceRepository:
         total_votes = total_votes_res.scalar_one() or 0
         helpful_rate = (upvotes / total_votes * 100.0) if total_votes > 0 else 100.0
 
+        search_total_res = await self.db.execute(select(func.count(SearchLog.id)))
+        search_total = search_total_res.scalar_one() or 0
+        search_miss_res = await self.db.execute(select(func.count(SearchLog.id)).where(SearchLog.result_count == 0))
+        search_misses = search_miss_res.scalar_one() or 0
+
+        ai_total_res = await self.db.execute(select(func.count(AiUsageLog.id)))
+        ai_total = ai_total_res.scalar_one() or 0
+        ai_cache_res = await self.db.execute(
+            select(func.count(AiUsageLog.id)).where(AiUsageLog.prompt_version == "cached")
+        )
+        ai_cache_hits = ai_cache_res.scalar_one() or 0
+
+        request_result = await self.db.execute(select(ApiRequestMetric.status_code, ApiRequestMetric.duration_ms))
+        request_rows = request_result.all()
+        durations = sorted(float(duration) for _, duration in request_rows)
+        error_requests = sum(1 for status_code, _ in request_rows if int(status_code) >= 500)
+        p95_index = max(0, min(len(durations) - 1, int(len(durations) * 0.95) - 1)) if durations else 0
+        ai_usage_result = await self.db.execute(
+            select(func.coalesce(func.sum(AiUsageLog.tokens_used), 0), func.coalesce(func.avg(AiUsageLog.latency_ms), 0))
+        )
+        ai_tokens_total, ai_latency_avg = ai_usage_result.one()
+
         percent_with_owner = (articles_with_owner / total_articles * 100.0) if total_articles > 0 else 0.0
         percent_overdue = (overdue_articles / total_articles * 100.0) if total_articles > 0 else 0.0
 
@@ -129,5 +153,13 @@ class GovernanceRepository:
             "percent_with_owner": percent_with_owner,
             "percent_overdue": percent_overdue,
             "open_gaps": open_gaps,
-            "helpful_rate": helpful_rate
+            "helpful_rate": helpful_rate,
+            "search_miss_rate": (search_misses / search_total * 100.0) if search_total else 0.0,
+            "ai_cache_hit_rate": (ai_cache_hits / ai_total * 100.0) if ai_total else 0.0,
+            "api_request_count": len(request_rows),
+            "api_error_rate": (error_requests / len(request_rows) * 100.0) if request_rows else 0.0,
+            "api_p95_latency_ms": durations[p95_index] if durations else 0.0,
+            "ai_requests": ai_total,
+            "ai_tokens_total": int(ai_tokens_total or 0),
+            "ai_average_latency_ms": float(ai_latency_avg or 0),
         }
