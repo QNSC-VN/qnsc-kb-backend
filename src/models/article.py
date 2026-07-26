@@ -17,6 +17,7 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "articles"
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True, index=True)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(100), nullable=False, index=True)

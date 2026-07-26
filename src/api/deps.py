@@ -48,6 +48,8 @@ async def init_db() -> None:
             "ALTER TABLE articles ADD COLUMN IF NOT EXISTS needs_update BOOLEAN NOT NULL DEFAULT FALSE",
             "ALTER TABLE articles ADD COLUMN IF NOT EXISTS index_status VARCHAR(30) NOT NULL DEFAULT 'pending'",
             "ALTER TABLE articles ADD COLUMN IF NOT EXISTS index_error TEXT",
+            "ALTER TABLE articles ADD COLUMN IF NOT EXISTS external_id VARCHAR(120)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_articles_external_id ON articles (external_id)",
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS company_domain VARCHAR(255)",
             "ALTER TABLE articles ADD COLUMN IF NOT EXISTS company_domain VARCHAR(255)",
             "UPDATE users SET company_domain = split_part(lower(email), '@', 2) WHERE company_domain IS NULL OR company_domain = ''",

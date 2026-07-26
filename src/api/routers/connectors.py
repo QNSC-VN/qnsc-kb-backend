@@ -17,7 +17,8 @@ router = APIRouter()
 class ConnectorCreate(BaseModel):
     name: str = Field(min_length=2, max_length=100)
     system: str = "local_folder"
-    path: str
+    path: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
 
 def _response(connector: Connector) -> dict[str, Any]:
     return {
@@ -42,14 +43,19 @@ async def create_connector(
     current_user: User = Depends(require_role(["Admin", "CEO"])),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    if request.system != "local_folder":
-        raise HTTPException(status_code=422, detail="SharePoint/Google Drive require OAuth authorization and are not enabled yet")
-    from src.domain.connectors import _safe_folder
-    folder = _safe_folder(request.path)
+    if request.system not in {"local_folder", "google_drive", "sharepoint", "slack"}:
+        raise HTTPException(status_code=422, detail="Unsupported connector provider")
+    folder = None
+    if request.system == "local_folder":
+        from src.domain.connectors import _safe_folder
+        folder = _safe_folder(request.path)
     if current_user.role == "CEO" and current_user.company_domain not in request.name.lower():
         # Company remains the CEO's verified email domain; the name itself is not trusted for scoping.
         pass
-    connector = Connector(name=request.name, system=request.system, company_domain=current_user.company_domain, created_by=current_user.id, config_json={"path": str(folder)})
+    safe_config = {key: value for key, value in request.config.items() if key not in {"client_secret", "access_token", "refresh_token", "token"}}
+    if folder:
+        safe_config["path"] = str(folder)
+    connector = Connector(name=request.name, system=request.system, company_domain=current_user.company_domain, created_by=current_user.id, config_json=safe_config)
     db.add(connector)
     await db.commit()
     await db.refresh(connector)
@@ -66,5 +72,10 @@ async def sync_connector(
         raise HTTPException(status_code=404, detail="Connector not found")
     if current_user.role == "CEO" and connector.company_domain != current_user.company_domain:
         raise HTTPException(status_code=403, detail="CEOs can only sync their company connectors")
+    if connector.system != "local_folder":
+        connector.status = "pending_auth"
+        await db.commit()
+        return {"connector_id": str(connector.id), "job_id": None, "status": connector.status, "last_sync": connector.last_sync,
+                "message": "Provider registered. OAuth authorization and provider worker configuration are required before sync."}
     job = await sync_local_folder(db, connector)
     return {"connector_id": str(connector.id), "job_id": str(job.id), "status": job.status, "last_sync": connector.last_sync}

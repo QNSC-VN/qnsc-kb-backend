@@ -1,7 +1,10 @@
 import structlog
 import threading
-from sentence_transformers import SentenceTransformer
+from typing import TYPE_CHECKING, Any
 from src.core.config import settings
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = structlog.get_logger()
 
@@ -10,13 +13,13 @@ class BGEModelSingleton:
     _lock = threading.Lock()
 
     @classmethod
-    def get_model(cls) -> SentenceTransformer:
+    def get_model(cls) -> Any:
         if cls._model is None:
             with cls._lock:
                 if cls._model is None:
                     logger.info("Initializing SentenceTransformer model (loading weights)...", model=settings.EMBEDDING_MODEL)
                     try:
-                        # Lazy loading SentenceTransformer model
+                        from sentence_transformers import SentenceTransformer
                         cls._model = SentenceTransformer(settings.EMBEDDING_MODEL)
                         logger.info("SentenceTransformer model loaded successfully.")
                     except Exception as e:

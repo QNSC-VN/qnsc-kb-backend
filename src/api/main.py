@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from src.core.config import settings
-from src.api.routers import auth, articles, search, ai, interactions, governance, meta, connectors
+from src.api.routers import auth, articles, search, ai, interactions, governance, meta, connectors, knowledge
 from src.api.deps import SessionLocal, init_db
 from src.domain.events import event_bus
 from src.models.article import Article
@@ -155,6 +155,7 @@ app.include_router(interactions.router, prefix=f"{settings.API_V1_STR}/interacti
 app.include_router(governance.router, prefix=f"{settings.API_V1_STR}/governance", tags=["governance"])
 app.include_router(meta.router, prefix=f"{settings.API_V1_STR}/meta", tags=["meta"])
 app.include_router(connectors.router, prefix=f"{settings.API_V1_STR}/connectors", tags=["connectors"])
+app.include_router(knowledge.router, prefix=f"{settings.API_V1_STR}/knowledge", tags=["knowledge"])
 
 @app.get("/")
 async def root():

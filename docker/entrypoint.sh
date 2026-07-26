@@ -2,7 +2,7 @@
 set -e
 
 # Run migrations
-alembic upgrade head
+alembic -c migrations/alembic.ini upgrade head
 
 # Start App
 exec "$@"

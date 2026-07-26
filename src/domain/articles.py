@@ -36,6 +36,7 @@ class ArticleService:
         language: str = "en",
         access_group_ids: list[uuid.UUID] | None = None,
         next_review: datetime | None = None,
+        external_id: str | None = None,
         original_body_md: str | None = None,
     ) -> Article:
         # Resolve access groups
@@ -49,6 +50,7 @@ class ArticleService:
 
         article = Article(
             title=title,
+            external_id=external_id,
             body_md=body_md,
             dept=dept,
             domain=domain,

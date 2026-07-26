@@ -1,4 +1,16 @@
-import structlog
+try:
+    import structlog
+except ModuleNotFoundError:  # Optional logging dependency should not block pure domain tests.
+    class _FallbackLogger:
+        def __getattr__(self, _name):
+            return lambda *args, **kwargs: None
+
+    class _FallbackStructlog:
+        @staticmethod
+        def get_logger():
+            return _FallbackLogger()
+
+    structlog = _FallbackStructlog()
 import uuid
 import asyncio
 from typing import Callable, Awaitable

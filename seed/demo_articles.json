@@ -1,0 +1,880 @@
+{
+  "source": "C:\\Users\\admin\\Downloads\\qnsc-knowledge-base.html",
+  "articles": [
+    {
+      "external_id": "spine-001",
+      "dept": "spine",
+      "domain": "Tổng quan & mô hình",
+      "type": "POLICY",
+      "title": "QNSC — Tổng quan công ty & mô hình dual-stream",
+      "tags": [
+        "company",
+        "strategy",
+        "fabless",
+        "dual-stream"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "quan"
+      ],
+      "related": [
+        "spine-002",
+        "product-001",
+        "bd-001"
+      ],
+      "created": "2026-03-12",
+      "last_reviewed": "2026-05-20",
+      "next_review": "2026-11-20",
+      "summary": "Quy Nhơn Semiconductor là startup fabless IC design (thành lập 03/2026, HQ Pisico Building, Quy Nhơn). Vận hành theo hai luồng doanh thu: dịch vụ thiết kế IC + phát triển sản phẩm riêng.",
+      "body_text": "QNSC (Quy Nhơn Semiconductor Co., Ltd.) là một startup fabless IC design thành lập tháng 03/2026, trụ sở tại Pisico Building, Quy Nhơn. Fabless nghĩa là QNSC thiết kế chip nhưng không sở hữu nhà máy (fab) — sản xuất thuê ngoài qua foundry. Mô hình dual-stream Doanh thu &amp; phát triển đi theo hai luồng song song : Stream A — Dịch vụ thiết kế IC cho khách hàng fabless quốc tế. Tạo dòng tiền ngắn hạn, xây năng lực &amp; uy tín. Xem Quy trình engagement Stream A . Stream B — Sản phẩm riêng của QNSC : MCU, IoT devices, smart card, secure element. Giá trị dài hạn. Xem Danh mục sản phẩm . Lộ trình công nghệ R&amp;D hướng tới chip Edge-AI 28nm qua chương trình OpenCIM MicroSoC , theo chiến lược two-node: tape-out 130/180nm để verify trước, rồi 28nm cho hiệu năng thương mại. Ứng dụng mục tiêu: UAV, healthcare wearables, nông nghiệp, industrial IoT. Lưu ý framing: 28nm luôn được nói là \"hướng tới / lộ trình\" , không bao giờ là năng lực hiện tại. Xem FAQ mô tả năng lực 28nm ."
+    },
+    {
+      "external_id": "spine-002",
+      "dept": "spine",
+      "domain": "Tổ chức & nhân sự",
+      "type": "POLICY",
+      "title": "Cơ cấu tổ chức & nhân sự chủ chốt",
+      "tags": [
+        "org",
+        "people",
+        "leadership",
+        "board"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "quan"
+      ],
+      "related": [
+        "spine-001",
+        "legal-004",
+        "people-003"
+      ],
+      "created": "2026-03-15",
+      "last_reviewed": "2026-05-02",
+      "next_review": "2026-11-02",
+      "summary": "Ban lãnh đạo, cố vấn và đối tác cốt lõi: Quang Lê (CEO), Vũ Hồng Quân (Chairman), Thạo An Nguyễn (Board Advisor), 4 cố vấn Arcana ẩn danh, ICSLab và AMPL.",
+      "body_text": "Ban điều hành Quang Lê — CEO &amp; Co-Founder. 15+ năm P&amp;L leadership tại các tổ chức kỹ thuật US/EU/APAC; chuyên môn AI-augmented engineering management . MSc Business Administration + MSc Information Systems (Deakin), PMI-ACP, PSM I &amp; II. Vũ Hồng Quân — Chairman &amp; Co-Founder, cổ đông đa số. Doanh nhân serial: founder/chairman TAKUMINO (JV với OKUNO Trading, Nhật), My Quang JSC; Board Member PISICO Bình Định; Vice Chairman Hội Doanh nhân trẻ VN (Trung ương). BBA Auckland University of Technology. Cố vấn Thạo An Nguyễn — Executive Board Advisor (Vietnamese-American, San Jose). 40 năm semiconductor + data center; VLSI chip designer tại IBM (1985); vai trò quan trọng tại Meta qua Open Compute Project. Đã ký Advisory Services Agreement. Xem Thoả thuận cố vấn . 4 cố vấn chiến lược Arcana — nền tảng Intel, Samsung, TSMC, Arm, Synopsys, Qualcomm, Bosch, Ericsson (25–40+ năm mỗi người). Giữ ẩn danh trong tài liệu công khai (chỉ dùng credential tập thể, không tên/mặt trừ khi có consent). Đối tác cốt lõi Ascentra Microsystems Pte Ltd (AMPL, Singapore) — đối tác Phase 1 microarchitecture + OJT. Xem Đối tác Arcana / AMPL . Dr. Linh / ICSLab (HCMUT-affiliated) — R&amp;D partner chương trình OpenCIM. Xem Hợp tác ICSLab / HCMUT . Nhân sự đang trống — critical Vai trò ML/compiler owner cho OpenCIM chưa lấp, nằm trên critical path. Xem Tuyển dụng ML/compiler owner ."
+    },
+    {
+      "external_id": "spine-003",
+      "dept": "spine",
+      "domain": "IP & bảo mật",
+      "type": "POLICY",
+      "title": "Chính sách IP & bảo mật — Demo IP vs Customer RTL",
+      "tags": [
+        "ip",
+        "confidentiality",
+        "rtl",
+        "demo-ip",
+        "legal"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "quan",
+        "thao"
+      ],
+      "related": [
+        "eng-006",
+        "legal-006",
+        "spine-006"
+      ],
+      "created": "2026-03-20",
+      "last_reviewed": "2026-05-28",
+      "next_review": "2026-08-28",
+      "summary": "Ranh giới IP cốt lõi: chỉ showcase Demo IP do QNSC tự thiết kế trên public protocol specs. RTL/scripts của khách hàng là TUYỆT ĐỐI cấm dùng cho mục đích khác.",
+      "body_text": "Đây là chính sách bắt buộc tuân thủ với toàn bộ đội kỹ thuật &amp; BD. Vi phạm = rủi ro pháp lý nghiêm trọng &amp; mất uy tín với khách hàng. Hai loại IP — hai bộ luật Demo IP (được phép showcase) Customer IP (tuyệt đối cấm tái sử dụng) Khối do QNSC tự thiết kế dựa trên public protocol specs (vd: I2C, SPI, AXI, UART...) RTL, scripts, testbench, netlist do khách hàng cung cấp hoặc QNSC viết cho dự án khách Dùng tự do cho marketing, portfolio, pitch Chỉ dùng trong đúng phạm vi engagement của khách đó Nguyên tắc Showcase chỉ bằng Demo IP. Cách showcase hợp pháp duy nhất là self-designed blocks trên public specs. Xem Dựng Demo IP showcase . Customer RTL/scripts là off-limits ngoài phạm vi dự án — không tái sử dụng, không đưa vào portfolio, không tham chiếu công khai. Mọi NDA phải được tôn trọng tuyệt đối. Xem NDA &amp; bảo mật . Không bao giờ Không bao giờ dùng tài sản (RTL, script, dữ liệu) của một khách hàng cho khách hàng khác, cho sản phẩm riêng, hay cho bất kỳ mục đích showcase nào."
+    },
+    {
+      "external_id": "spine-004",
+      "dept": "spine",
+      "domain": "Thương hiệu",
+      "type": "REFERENCE",
+      "title": "Hệ thống nhận diện thương hiệu v31 — \"Mars palette\"",
+      "tags": [
+        "brand",
+        "design",
+        "identity",
+        "mars-palette"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [],
+      "related": [
+        "spine-006"
+      ],
+      "created": "2026-04-01",
+      "last_reviewed": "2026-05-30",
+      "next_review": "2026-11-30",
+      "summary": "Bộ nhận diện đã LOCKED ở v31. Bảng màu Mars (Deep Navy / Graphite / Mars Copper / Titanium / Soft White), font Inter, mark chip-die Q vuông (không tròn).",
+      "body_text": "Bộ nhận diện QNSC đã LOCKED ở phiên bản v31 \"Mars palette\" . Mọi sản phẩm (website, TVC, tài liệu, KB này) đều dùng nhất quán hệ này, tiếp cận dark-first . Bảng màu Token Giá trị Background #0B1020 Deep Navy Secondary bg #1C1F26 Graphite Accent #B4432F Mars Copper Secondary text #B7BDC7 Titanium Primary text #F3F5F7 Soft White Typography &amp; Mark Font: Inter — wordmark Black/900; chữ \"SEMICONDUCTOR\" Regular/400 giãn letter-spacing. Mark: chip-die Q vuông — rounded-square copper die + chữ Q dạng rounded-square ring + góc dưới-phải vát (pin-1) + chấm fiducial trắng góc trên-trái. KHÔNG tròn. Đã có pack export (SVG/PNG/ICO) — tái sử dụng, không vẽ tay lại."
+    },
+    {
+      "external_id": "spine-005",
+      "dept": "spine",
+      "domain": "Tổng quan & mô hình",
+      "type": "FAQ",
+      "title": "Mô tả năng lực 28nm ra bên ngoài thế nào?",
+      "tags": [
+        "28nm",
+        "messaging",
+        "public",
+        "roadmap"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [],
+      "related": [
+        "spine-001",
+        "spine-006",
+        "eng-002"
+      ],
+      "created": "2026-04-10",
+      "last_reviewed": "2026-05-15",
+      "next_review": "2026-11-15",
+      "summary": "Luôn dùng \"hướng tới / lộ trình\" (roadmap) cho 28nm, không bao giờ trình bày như năng lực hiện tại. Năng lực thực tế hiện ở 130/180nm.",
+      "body_text": "Câu hỏi Khi nói chuyện với khách hàng / báo chí / đối tác, mô tả khả năng 28nm của QNSC thế nào cho đúng? TL;DR 28nm = \"hướng tới / lộ trình\" (roadmap). Không bao giờ nói như năng lực đã có. Chi tiết Năng lực hiện tại của QNSC nằm ở node 130/180nm (giai đoạn verification của OpenCIM). 28nm là đích thương mại trong lộ trình, chưa phải năng lực sản xuất hôm nay. ✅ \"QNSC hướng tới chip Edge-AI 28nm theo lộ trình OpenCIM.\" ❌ \"QNSC thiết kế chip 28nm.\" (sai — hàm ý năng lực hiện tại) Xem thêm Quyết định lựa chọn node để hiểu vì sao."
+    },
+    {
+      "external_id": "spine-006",
+      "dept": "spine",
+      "domain": "Truyền thông",
+      "type": "POLICY",
+      "title": "Nguyên tắc truyền thông đối ngoại",
+      "tags": [
+        "comms",
+        "pr",
+        "public",
+        "partners"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "quan"
+      ],
+      "related": [
+        "spine-002",
+        "spine-004",
+        "spine-005"
+      ],
+      "created": "2026-04-12",
+      "last_reviewed": "2026-05-18",
+      "next_review": "2026-11-18",
+      "summary": "Các quy tắc cứng cho mọi nội dung công khai: không logo wall đối tác (chỉ credential dạng text), cố vấn Arcana ẩn danh, framing 28nm là roadmap, framing Quang là \"AI-augmented engineering management\".",
+      "body_text": "Áp dụng cho website, TVC, pitch deck, social, báo chí. Quy tắc cứng Không logo wall cho brand đối tác (IBM/Meta/Intel/Samsung...) — chỉ dùng credential dạng text . Cố vấn Arcana ẩn danh — chỉ credential tập thể, không tên/mặt trừ khi đã xác nhận consent. 28nm = roadmap , không phải năng lực hiện tại (xem FAQ 28nm ). Background của Quang framing là \"AI-augmented engineering management\", không \"software delivery\". Tên đối tác: \"AMPL / Ascentra Microsystems\" là tên pháp lý; \"Arcana\" chỉ là tên gọi thân mật (xem Arcana hay AMPL? ). TVC — 3 open item chưa chốt (1) Consent cố vấn Arcana cho hiển thị tên/mặt; (2) chuẩn hoá tên cố vấn — \"Nguyễn An Thạo\" vs \"Thạo An Nguyễn\" (web/card dùng cái sau); (3) ICSLab đã sẵn sàng được nhắc công khai trong video chưa?"
+    },
+    {
+      "external_id": "eng-001",
+      "dept": "eng",
+      "domain": "OpenCIM MicroSoC",
+      "type": "POLICY",
+      "title": "Chương trình OpenCIM MicroSoC — Tổng quan",
+      "tags": [
+        "opencim",
+        "microsoc",
+        "r&d",
+        "edge-ai",
+        "roadmap"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "linh",
+      "reviewers": [
+        "thao",
+        "quang"
+      ],
+      "related": [
+        "eng-002",
+        "finance-001",
+        "people-003"
+      ],
+      "created": "2026-03-25",
+      "last_reviewed": "2026-05-25",
+      "next_review": "2026-08-25",
+      "summary": "Chương trình R&D 2 năm (v4) với ICSLab/HCMUT — ưu tiên Stream B. Edge-AI MicroSoC theo chiến lược two-node (130/180nm verify → 28nm thương mại). Ngân sách ~$310K incremental.",
+      "body_text": "OpenCIM MicroSoC là chương trình R&amp;D 2 năm (hiện bản v4), đối tác triển khai ICSLab / HCMUT , được cam kết là ưu tiên của Stream B (sản phẩm riêng). Mục tiêu Xây MicroSoC Edge-AI làm nền cho dòng sản phẩm riêng. Ứng dụng: UAV, healthcare wearables, nông nghiệp, industrial IoT. Two-node strategy Node verification (130/180nm): tape-out để kiểm chứng thiết kế &amp; chức năng với chi phí thấp. Node thương mại (28nm): đạt hiệu năng cạnh tranh cho sản phẩm cuối. Chi tiết lý do trong Quyết định lựa chọn node . Ngân sách ~ $310K incremental . Chi tiết: Ngân sách OpenCIM . Rủi ro critical path (1) Vai trò ML/compiler owner phải lấp trước Month 1 — xem Hiring . (2) Physical design/sign-off 28nm có thể cần đối tác design-service ngoài (chi phí chưa budget) — xem 28nm PD partner ."
+    },
+    {
+      "external_id": "eng-002",
+      "dept": "eng",
+      "domain": "Node strategy",
+      "type": "DECISION",
+      "title": "Quyết định lựa chọn node: vì sao two-node 130/180nm → 28nm",
+      "tags": [
+        "node",
+        "130nm",
+        "28nm",
+        "analog",
+        "decision"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "thao",
+      "reviewers": [
+        "linh",
+        "quang"
+      ],
+      "related": [
+        "eng-001",
+        "product-002",
+        "spine-005"
+      ],
+      "created": "2026-04-02",
+      "last_reviewed": "2026-05-22",
+      "next_review": "2026-11-22",
+      "summary": "130nm cạnh tranh cho analog/mixed-signal (BioAFE, medical wearables) nhưng KHÔNG cạnh tranh cho digital MCU/AI so với peers ở 22-40nm. Node phải khớp ứng dụng.",
+      "body_text": "Quyết định Dùng two-node: 130/180nm cho verification &amp; cho dòng analog/mixed-signal; 28nm là đích cho digital MCU/AI thương mại. Node phải khớp với ứng dụng. Phạm vi Áp dụng cho mọi quyết định product &amp; R&amp;D liên quan node. Lý do 130nm cạnh tranh cho analog/mixed-signal — vd BioAFE, medical wearables. Ở mảng này, node cũ hơn vẫn ổn về hiệu năng/chi phí. 130nm KHÔNG cạnh tranh cho digital MCU/AI — peers thương mại đang ở 22–40nm. Làm MCU/AI số ở 130nm là thua ngay từ vạch xuất phát về power/performance/diện tích. Hệ quả: tape-out 130/180nm để verify rẻ &amp; phục vụ dòng analog; nhưng để cạnh tranh ở digital phải tiến tới 28nm. Ngoại lệ &amp; ai duyệt Mọi đề xuất chọn node lệch khỏi nguyên tắc này phải được Thạo An Nguyễn + Quang Lê duyệt."
+    },
+    {
+      "external_id": "eng-003",
+      "dept": "eng",
+      "domain": "Design Verification",
+      "type": "SOP",
+      "title": "Quy trình Design Verification (DV)",
+      "tags": [
+        "dv",
+        "verification",
+        "methodology",
+        "milssa"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "afzal",
+      "reviewers": [
+        "thao"
+      ],
+      "related": [
+        "eng-004",
+        "eng-006",
+        "legal-001"
+      ],
+      "created": "2026-04-15",
+      "last_reviewed": "2026-05-26",
+      "next_review": "2026-08-26",
+      "summary": "Phương pháp DV theo curriculum Arcana/AMPL (cấp phép qua hợp đồng MILSSA). Quy trình chuẩn từ test plan đến coverage closure.",
+      "body_text": "Mục đích: chuẩn hoá quy trình verify thiết kế đúng spec trước khi tape-out. Curriculum nền tảng được cấp phép từ Arcana/AMPL qua hợp đồng MILSSA (Training IP License — DV + PD). Khi nào dùng Dùng khi: mọi block/SoC trước sign-off. Không dùng khi: prototyping nội bộ chưa cần kiểm chứng formal. Các bước Xây verification plan từ spec — liệt kê feature &amp; coverage goals. Dựng testbench &amp; môi trường (constrained-random + directed tests). Chạy regression, thu functional + code coverage . Phân tích coverage gap → bổ sung test → lặp đến coverage closure . Review &amp; ký sign-off DV trước khi sang PD. Cảnh báo IP Testbench/script viết cho dự án khách là Customer IP — tuân thủ Chính sách IP ."
+    },
+    {
+      "external_id": "eng-004",
+      "dept": "eng",
+      "domain": "Physical Design",
+      "type": "SOP",
+      "title": "Quy trình Physical Design (PD)",
+      "tags": [
+        "pd",
+        "physical-design",
+        "backend",
+        "milssa"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "rizwan",
+      "reviewers": [
+        "thao"
+      ],
+      "related": [
+        "eng-003",
+        "eng-005",
+        "legal-001"
+      ],
+      "created": "2026-04-16",
+      "last_reviewed": "2026-05-27",
+      "next_review": "2026-08-27",
+      "summary": "Luồng PD (backend) từ netlist đến GDSII: floorplan → place → CTS → route → sign-off. Curriculum từ Arcana/AMPL.",
+      "body_text": "Mục đích: chuyển netlist đã verify thành layout sản xuất được (GDSII). Curriculum từ Arcana/AMPL (MILSSA). Các bước (luồng chuẩn) Floorplan — bố trí khối, IO, power grid. Placement — đặt cell tối ưu timing/diện tích. CTS (clock tree synthesis) — phân phối clock cân bằng skew. Routing — đi dây, giải DRC. Sign-off — STA, DRC/LVS, power/IR, → GDSII. Liên quan rủi ro 28nm Sign-off ở 28nm yêu cầu năng lực &amp; tooling cao hơn — có thể cần đối tác ngoài. Xem 28nm PD partner ."
+    },
+    {
+      "external_id": "eng-005",
+      "dept": "eng",
+      "domain": "Physical Design",
+      "type": "DECISION",
+      "title": "28nm physical design — cần đối tác design-service ngoài",
+      "tags": [
+        "28nm",
+        "pd",
+        "partner",
+        "critical-path",
+        "nre"
+      ],
+      "status": "needs_update",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "thao",
+        "linh"
+      ],
+      "related": [
+        "eng-001",
+        "eng-004",
+        "finance-001"
+      ],
+      "created": "2026-05-05",
+      "last_reviewed": "2026-05-05",
+      "next_review": "2026-06-05",
+      "summary": "Physical design/sign-off ở 28nm nhiều khả năng vượt năng lực nội bộ hiện tại → cần scope đối tác design-service ngoài. Chi phí CHƯA được budget — đang là open item.",
+      "body_text": "Bối cảnh quyết định Lộ trình OpenCIM cần tới 28nm cho hiệu năng thương mại, nhưng physical design &amp; sign-off ở 28nm đòi hỏi năng lực/tooling/PDK cao hơn đáng kể so với 130/180nm. Hướng quyết định (tạm) Nhiều khả năng phải dùng đối tác design-service bên ngoài cho PD 28nm. Chi phí chưa được budget trong ngân sách OpenCIM hiện tại (~$310K). Open item — cần hành động Scoping &amp; ước lượng chi phí đối tác PD 28nm. Đây là điều kiện để hoàn thiện ngân sách OpenCIM . Bài này đang NEEDS_UPDATE — chờ kết quả scoping."
+    },
+    {
+      "external_id": "eng-006",
+      "dept": "eng",
+      "domain": "Demo IP",
+      "type": "HOWTO",
+      "title": "Dựng Demo IP showcase (self-designed blocks, public protocol specs)",
+      "tags": [
+        "demo-ip",
+        "showcase",
+        "portfolio",
+        "ip-safe"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "thao",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "spine-003",
+        "eng-003",
+        "bd-002"
+      ],
+      "created": "2026-04-20",
+      "last_reviewed": "2026-05-24",
+      "next_review": "2026-11-24",
+      "summary": "Cách dựng showcase IP hợp pháp: tự thiết kế block dựa trên public protocol specs (I2C/SPI/AXI...), tách bạch hoàn toàn khỏi customer IP.",
+      "body_text": "Mục tiêu: sau hướng dẫn này bạn dựng được một Demo IP dùng cho portfolio/pitch mà an toàn pháp lý 100% . Trước khi bắt đầu Đọc Chính sách IP . Chỉ chọn protocol có public spec . Các bước Chọn một public protocol (vd I2C, SPI, UART, AXI-Lite). Thiết kế block từ đầu dựa trên spec công khai — không tham chiếu RTL khách. Verify bằng testbench tự viết (xem DV ). Đóng gói làm Demo IP: mô tả tính năng, kết quả coverage, không lộ chi tiết khách hàng. Kiểm chứng đã đúng Mọi dòng RTL/script đều truy được về public spec + lao động QNSC , không có mảnh nào từ khách hàng. Nếu không chắc → coi như chưa đạt."
+    },
+    {
+      "external_id": "product-001",
+      "dept": "product",
+      "domain": "Danh mục sản phẩm",
+      "type": "POLICY",
+      "title": "Danh mục sản phẩm: MCU, IoT, smart card, secure element",
+      "tags": [
+        "product",
+        "mcu",
+        "iot",
+        "secure-element",
+        "smart-card"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "thao"
+      ],
+      "related": [
+        "product-002",
+        "eng-002",
+        "bd-001"
+      ],
+      "created": "2026-04-05",
+      "last_reviewed": "2026-05-19",
+      "next_review": "2026-11-19",
+      "summary": "Stream B nhắm 4 dòng: MCU, IoT devices, smart card, secure element — phục vụ verticals UAV, healthcare wearables, nông nghiệp, industrial IoT.",
+      "body_text": "Dòng sản phẩm riêng (Stream B) của QNSC nhắm 4 nhóm: MCU — microcontroller cho edge/embedded. IoT devices — chip cho thiết bị kết nối. Smart card . Secure element — chip bảo mật phần cứng. Verticals mục tiêu UAV · healthcare wearables · nông nghiệp · industrial IoT. Lưu ý node phải khớp ứng dụng (analog/mixed-signal hợp 130nm; digital MCU/AI cần 28nm) — xem Node strategy . Vì sao không phụ thuộc một khách hàng duy nhất: xem Chiến lược multi-vertical anchor ."
+    },
+    {
+      "external_id": "product-002",
+      "dept": "product",
+      "domain": "Chiến lược anchor",
+      "type": "DECISION",
+      "title": "Chiến lược multi-vertical anchor (vì sao single-anchor bất khả thi)",
+      "tags": [
+        "strategy",
+        "anchor",
+        "nre",
+        "breakeven",
+        "decision"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "quan",
+        "thao"
+      ],
+      "related": [
+        "product-001",
+        "bd-001",
+        "finance-001"
+      ],
+      "created": "2026-04-08",
+      "last_reviewed": "2026-05-21",
+      "next_review": "2026-11-21",
+      "summary": "Chip NRE rất thâm dụng vốn → phụ thuộc một anchor customer là bất khả thi tài chính. Bắt buộc chiến lược nhiều anchor đa-vertical để đạt breakeven.",
+      "body_text": "Quyết định Không xây mô hình dựa trên một anchor customer duy nhất. Bắt buộc chiến lược multi-vertical anchor. Lý do Chip NRE thâm dụng vốn (non-recurring engineering — chi phí thiết kế/mask/tape-out rất lớn). Phụ thuộc một anchor → nếu khách rút, không có đường về breakeven → rủi ro tồn vong. Trải rủi ro qua nhiều vertical (healthtech, smart home, agritech...) cho điểm hoà vốn khả thi &amp; bền. Đây là nền tảng cho chiến lược BD — xem Silicon Enabler for Vietnamese Software Champions ."
+    },
+    {
+      "external_id": "bd-001",
+      "dept": "bd",
+      "domain": "Anchor strategy",
+      "type": "PLAYBOOK",
+      "title": "Playbook: \"Silicon Enabler for Vietnamese Software Champions\"",
+      "tags": [
+        "gtm",
+        "anchor",
+        "playbook",
+        "healthtech",
+        "agritech",
+        "smart-home"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "quan"
+      ],
+      "related": [
+        "product-002",
+        "bd-002",
+        "product-001"
+      ],
+      "created": "2026-04-18",
+      "last_reviewed": "2026-05-23",
+      "next_review": "2026-11-23",
+      "summary": "Chiến lược tiếp cận anchor partner: định vị QNSC là \"nhà cung cấp silicon\" cho các nhà vô địch phần mềm Việt Nam, ưu tiên các vertical healthtech, smart home, agritech.",
+      "body_text": "Định vị: QNSC là \"Silicon Enabler\" — đối tác cung cấp silicon/chip cho các Vietnamese Software Champions (công ty phần mềm Việt đang muốn làm sản phẩm phần cứng/IoT). Vì sao chiến lược này Khớp với yêu cầu multi-vertical anchor : thay vì lệ thuộc một khách lớn, ta xây danh mục anchor đa-vertical. Verticals ưu tiên Healthtech — hợp dòng wearables/BioAFE (analog 130nm cạnh tranh). Smart home — IoT devices, secure element. Agritech — industrial/agriculture IoT. Logic giá trị Các champion phần mềm Việt có khách hàng &amp; domain, nhưng thiếu năng lực silicon. QNSC lấp đúng khoảng đó — vừa tạo anchor đa-vertical, vừa định vị QNSC như hạ tầng silicon nội địa."
+    },
+    {
+      "external_id": "bd-002",
+      "dept": "bd",
+      "domain": "Engagement Stream A",
+      "type": "HOWTO",
+      "title": "Quy trình engagement dịch vụ IC design (Stream A)",
+      "tags": [
+        "stream-a",
+        "services",
+        "engagement",
+        "process"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "thao"
+      ],
+      "related": [
+        "bd-001",
+        "spine-003",
+        "legal-006"
+      ],
+      "created": "2026-04-22",
+      "last_reviewed": "2026-04-22",
+      "next_review": "2026-10-22",
+      "summary": "Luồng tiếp nhận và thực thi một dự án dịch vụ thiết kế IC cho khách quốc tế — từ NDA, scope, đến delivery, với ranh giới IP rõ ràng.",
+      "body_text": "Mục tiêu: luồng chuẩn để nhận &amp; chạy một dự án Stream A (dịch vụ thiết kế cho khách fabless quốc tế). Các bước NDA trước mọi trao đổi kỹ thuật (xem NDA &amp; bảo mật ). Scope &amp; SOW — phạm vi, deliverable, timeline, giá. Thực thi theo DV/PD chuẩn — tài sản khách là Customer IP, tách bạch tuyệt đối. Delivery &amp; sign-off ; chỉ showcase bằng Demo IP, không dùng tài sản khách (xem Chính sách IP )."
+    },
+    {
+      "external_id": "legal-001",
+      "dept": "legal",
+      "domain": "Arcana / AMPL",
+      "type": "POLICY",
+      "title": "Đối tác Arcana / AMPL — MOU & hợp đồng MILSSA",
+      "tags": [
+        "arcana",
+        "ampl",
+        "mou",
+        "milssa",
+        "contract",
+        "training-ip"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quan",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "eng-003",
+        "eng-004",
+        "spine-002"
+      ],
+      "created": "2026-03-28",
+      "last_reviewed": "2026-05-29",
+      "next_review": "2026-08-29",
+      "summary": "Ascentra Microsystems Pte Ltd (AMPL, Singapore) — đối tác Phase 1 microarchitecture + OJT. MOU đã ký (Jafar Safdar, CEO). Hợp đồng MILSSA đã executed: USD 150K net (Training IP 100K + Customer Engagement IP 50K).",
+      "body_text": "Ascentra Microsystems Pte Ltd (AMPL, Singapore) — tên gọi thân mật \"Arcana\" — là đối tác Phase 1 microarchitecture &amp; OJT training. \"AMPL / Ascentra Microsystems\" là tên pháp lý dùng trong hợp đồng &amp; tài liệu công khai (xem Arcana hay AMPL? ). MOU Đã ký với Jafar Safdar (CEO) . Nhân sự chủ chốt Arcana: Jafar Safdar, Dr. Afzal Khan, Shahid Rizwan, Shahid Mustafa. Hợp đồng MILSSA (executed) Hạng mục Giá trị (net) Training IP License (curriculum DV + PD) USD 100K Customer Engagement IP USD 50K Tổng USD 150K Curriculum DV/PD là nền cho quy trình DV &amp; PD ."
+    },
+    {
+      "external_id": "legal-002",
+      "dept": "legal",
+      "domain": "Arcana / AMPL",
+      "type": "FAQ",
+      "title": "Arcana hay AMPL — dùng tên nào?",
+      "tags": [
+        "naming",
+        "ampl",
+        "arcana",
+        "legal-entity"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [],
+      "related": [
+        "legal-001",
+        "spine-006"
+      ],
+      "created": "2026-04-25",
+      "last_reviewed": "2026-05-10",
+      "next_review": "2026-11-10",
+      "summary": "AMPL / Ascentra Microsystems Pte Ltd = tên pháp lý (dùng trong hợp đồng & tài liệu công khai). \"Arcana\" = tên gọi thân mật nội bộ.",
+      "body_text": "Câu hỏi Trong hợp đồng / website / tài liệu nên gọi đối tác là \"Arcana\" hay \"AMPL\"? TL;DR Tài liệu chính thức &amp; công khai → \"AMPL / Ascentra Microsystems Pte Ltd\" (tên pháp lý). Nội bộ nói nhanh → \"Arcana\" (tên thân mật). Quan trọng cho tính nhất quán của hợp đồng &amp; vật liệu công khai. Xem Đối tác Arcana / AMPL ."
+    },
+    {
+      "external_id": "legal-003",
+      "dept": "legal",
+      "domain": "ICSLab / HCMUT",
+      "type": "POLICY",
+      "title": "Hợp tác R&D ICSLab / HCMUT",
+      "tags": [
+        "icslab",
+        "hcmut",
+        "r&d",
+        "academic",
+        "opencim"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "linh",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "eng-001",
+        "people-001",
+        "spine-006"
+      ],
+      "created": "2026-04-01",
+      "last_reviewed": "2026-05-16",
+      "next_review": "2026-11-16",
+      "summary": "ICSLab (HCMUT-affiliated, dẫn dắt bởi Dr. Linh) là R&D partner của chương trình OpenCIM MicroSoC. Việc nhắc công khai đang chờ xác nhận.",
+      "body_text": "ICSLab — lab nghiên cứu bán dẫn học thuật (affiliated HCMUT), dẫn dắt bởi Dr. Linh — là đối tác R&amp;D của OpenCIM MicroSoC . Cũng là đối tác phát triển nhân tài cùng QNU — xem Talent pipeline . Open item — truyền thông Việc nhắc ICSLab công khai (vd trong TVC) đang chờ xác nhận . Đến khi xác nhận, không đưa ICSLab vào vật liệu công khai. Xem Nguyên tắc truyền thông ."
+    },
+    {
+      "external_id": "legal-004",
+      "dept": "legal",
+      "domain": "Cố vấn",
+      "type": "POLICY",
+      "title": "Thoả thuận cố vấn — Thạo An Nguyễn",
+      "tags": [
+        "advisor",
+        "agreement",
+        "viac",
+        "contract"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quan",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "spine-002",
+        "legal-005"
+      ],
+      "created": "2026-03-30",
+      "last_reviewed": "2026-05-12",
+      "next_review": "2026-08-12",
+      "summary": "Expert Advisor Agreement với Thạo An Nguyễn đã ký: USD 50K/năm, thanh toán quý, luật Việt Nam / trọng tài VIAC. LƯU Ý: Advisory Services Agreement bị thiếu trong legal archive — cần filing.",
+      "body_text": "Điều khoản Phí: USD 50K/năm, thanh toán theo quý . Luật áp dụng: Việt Nam; trọng tài VIAC . Đã ký Expert Advisor Agreement. Open item — pháp lý Advisory Services Agreement bị flag là thiếu trong legal archive — cần filing. Đây là việc tồn đọng cần xử lý. Hồ sơ liên quan người: Cơ cấu tổ chức ."
+    },
+    {
+      "external_id": "legal-005",
+      "dept": "legal",
+      "domain": "Related-party",
+      "type": "POLICY",
+      "title": "Giao dịch với bên liên quan — Pisico lease (≥75% Members\\",
+      "tags": [
+        "related-party",
+        "pisico",
+        "lease",
+        "governance",
+        "charter",
+        "conflict"
+      ],
+      "status": "published",
+      "sensitivity": "restricted",
+      "owner": "quan",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "legal-004",
+        "spine-002",
+        "finance-001"
+      ],
+      "created": "2026-04-03",
+      "last_reviewed": "2026-05-14",
+      "next_review": "2026-08-14",
+      "summary": "Hợp đồng thuê Pisico Building là giao dịch bên liên quan: cần ≥75% Members\\",
+      "body_text": "Restricted — chỉ exec &amp; legal Tài liệu này chứa thông tin quản trị nhạy cảm. Vấn đề Hợp đồng thuê Pisico Building (trụ sở QNSC) là một giao dịch với bên liên quan vì Vũ Hồng Quân là board member của PISICO Bình Định → xung đột lợi ích tiềm tàng cần được quản trị minh bạch. Yêu cầu theo điều lệ Giao dịch bên liên quan này yêu cầu ≥75% Members\\ , xref art(\\'legal-004\\') xref art(\\'finance-001\\')"
+    },
+    {
+      "external_id": "legal-006",
+      "dept": "legal",
+      "domain": "NDA",
+      "type": "REFERENCE",
+      "title": "NDA & bảo mật — Mutual NDA TORmem, Inc.",
+      "tags": [
+        "nda",
+        "tormem",
+        "confidentiality"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quan",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "spine-003",
+        "bd-002"
+      ],
+      "created": "2026-04-28",
+      "last_reviewed": "2026-05-08",
+      "next_review": "2026-11-08",
+      "summary": "Mutual NDA với TORmem, Inc. đã executed. Mọi trao đổi với TORmem nằm trong phạm vi NDA này.",
+      "body_text": "Mutual NDA với TORmem, Inc. đã được executed. Mọi trao đổi kỹ thuật/thương mại với TORmem phải tuân thủ phạm vi NDA. Nguyên tắc IP chung: Chính sách IP &amp; bảo mật . NDA là bước đầu bắt buộc của mọi engagement — xem Quy trình Stream A ."
+    },
+    {
+      "external_id": "finance-001",
+      "dept": "finance",
+      "domain": "Ngân sách",
+      "type": "POLICY",
+      "title": "Ngân sách OpenCIM (~$310K incremental)",
+      "tags": [
+        "budget",
+        "opencim",
+        "nre",
+        "finance"
+      ],
+      "status": "published",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "quan"
+      ],
+      "related": [
+        "eng-001",
+        "eng-005",
+        "product-002"
+      ],
+      "created": "2026-04-06",
+      "last_reviewed": "2026-05-17",
+      "next_review": "2026-08-17",
+      "summary": "Chương trình OpenCIM MicroSoC ngân sách ~$310K incremental cho 2 năm. Chưa bao gồm chi phí đối tác physical design 28nm (open item).",
+      "body_text": "Ngân sách incremental cho OpenCIM MicroSoC (2 năm): ~$310K . Chưa được budget Chi phí đối tác physical design/sign-off 28nm chưa nằm trong con số này — xem 28nm PD partner . Cần scoping để hoàn thiện ngân sách. Bối cảnh tài chính tổng: chip NRE thâm dụng vốn → xem Chiến lược multi-vertical anchor ."
+    },
+    {
+      "external_id": "finance-002",
+      "dept": "finance",
+      "domain": "Ngân hàng",
+      "type": "REFERENCE",
+      "title": "Tài khoản ngân hàng — BIDV",
+      "tags": [
+        "banking",
+        "bidv",
+        "finance"
+      ],
+      "status": "published",
+      "sensitivity": "restricted",
+      "owner": "quang",
+      "reviewers": [],
+      "related": [
+        "finance-001"
+      ],
+      "created": "2026-04-11",
+      "last_reviewed": "2026-05-06",
+      "next_review": "2026-11-06",
+      "summary": "QNSC sử dụng tài khoản doanh nghiệp tại BIDV cho hoạt động thanh toán. Chi tiết tài khoản giữ trong hồ sơ restricted.",
+      "body_text": "Restricted — exec &amp; finance Chi tiết số tài khoản giữ trong hồ sơ hạn chế, không hiển thị rộng. QNSC vận hành tài khoản doanh nghiệp tại BIDV cho thanh toán &amp; giao dịch (vd phí cố vấn quý, các khoản hợp đồng). Liên quan: Ngân sách OpenCIM ."
+    },
+    {
+      "external_id": "it-001",
+      "dept": "it",
+      "domain": "Email / M365",
+      "type": "SOP",
+      "title": "Cấu hình email Microsoft 365 (SPF/DKIM/DMARC/MX)",
+      "tags": [
+        "email",
+        "m365",
+        "spf",
+        "dkim",
+        "dmarc",
+        "mx"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "it",
+      "reviewers": [
+        "quang"
+      ],
+      "related": [
+        "it-002",
+        "it-003"
+      ],
+      "created": "2026-04-09",
+      "last_reviewed": "2026-05-31",
+      "next_review": "2026-08-31",
+      "summary": "Email QNSC chạy trên Microsoft 365 (quangld@qnsc.vn, tenant qnscvn.onmicrosoft.com). SPF/DKIM/DMARC/MX đã cấu hình đúng.",
+      "body_text": "Mục đích: tham chiếu cấu hình email doanh nghiệp QNSC trên Microsoft 365. Thông tin Domain: qnsc.vn · email mẫu: quangld@qnsc.vn Tenant: qnscvn.onmicrosoft.com Trạng thái các bản ghi (đã đúng) SPF ✅ · DKIM ✅ · DMARC ✅ · MX ✅ Lộ trình siết DMARC: xem Hardening DMARC . Sự cố từng gặp về gửi mail: xem RCA outbound IP reputation ."
+    },
+    {
+      "external_id": "it-002",
+      "dept": "it",
+      "domain": "DMARC",
+      "type": "DECISION",
+      "title": "Lộ trình hardening DMARC (p=none → quarantine → reject)",
+      "tags": [
+        "dmarc",
+        "email-security",
+        "roadmap",
+        "deliverability"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "it"
+      ],
+      "related": [
+        "it-001",
+        "it-003"
+      ],
+      "created": "2026-04-14",
+      "last_reviewed": "2026-05-13",
+      "next_review": "2026-08-13",
+      "summary": "Siết DMARC theo 3 bước có kiểm soát: p=none (quan sát) → p=quarantine → p=reject, chỉ tiến bước khi aggregate report ổn định.",
+      "body_text": "Quyết định Hardening DMARC theo lộ trình: p=none → p=quarantine → p=reject . Chỉ tiến bước tiếp khi aggregate report ổn định . Lý do Nhảy thẳng lên p=reject khi chưa quan sát đủ sẽ chặn nhầm mail hợp lệ. Bắt đầu p=none để thu báo cáo, xác nhận mọi nguồn gửi hợp pháp đều pass, rồi mới siết dần. Trạng thái Đang ở giai đoạn đầu lộ trình; theo dõi aggregate report trước khi nâng policy. Bối cảnh cấu hình: M365 email setup ."
+    },
+    {
+      "external_id": "it-003",
+      "dept": "it",
+      "domain": "Incidents",
+      "type": "RCA",
+      "title": "RCA: Sự cố outbound IP reputation block",
+      "tags": [
+        "rca",
+        "incident",
+        "email",
+        "deliverability",
+        "resolved"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "it"
+      ],
+      "related": [
+        "it-001",
+        "it-002"
+      ],
+      "created": "2026-05-04",
+      "last_reviewed": "2026-05-11",
+      "next_review": "2026-11-11",
+      "summary": "Sự cố: mail outbound bị chặn do IP reputation. Đã giải quyết qua ticket Microsoft Support. Root cause & hành động ngăn tái diễn ghi lại đầy đủ.",
+      "body_text": "Tóm tắt Email outbound của QNSC bị chặn/bị giảm deliverability do outbound IP reputation trên hạ tầng gửi. Đã được giải quyết qua ticket Microsoft Support. Tác động Một số email gửi ra bị chặn/đẩy spam trong thời gian sự cố → ảnh hưởng liên lạc đối ngoại. Timeline Phát hiện: mail gửi ra bị bounce/được báo spam. Chẩn đoán: xác định nguyên nhân là IP reputation của outbound, không phải lỗi SPF/DKIM/DMARC (các bản ghi này đã đúng). Xử lý: mở ticket Microsoft Support → reputation được khôi phục. 5 Whys (root cause) Mail bị chặn → vì IP gửi bị đánh dấu reputation thấp. Vì sao reputation thấp → IP nằm trong dải bị đánh giá xấu trên hạ tầng shared outbound. Vì sao chưa phát hiện sớm → chưa có monitoring chủ động về deliverability/reputation. Ngăn tái diễn Duy trì SPF/DKIM/DMARC đúng (đã có) &amp; tiến lộ trình hardening DMARC . Thiết lập theo dõi deliverability/reputation chủ động (owner: IT). Bài học: SPF/DKIM/DMARC đúng là cần nhưng chưa đủ — IP reputation là một trục độc lập cần giám sát."
+    },
+    {
+      "external_id": "people-001",
+      "dept": "people",
+      "domain": "Talent pipeline",
+      "type": "POLICY",
+      "title": "Đường ống nhân tài QNU + ICSLab",
+      "tags": [
+        "talent",
+        "qnu",
+        "icslab",
+        "hiring",
+        "training"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "linh"
+      ],
+      "related": [
+        "people-002",
+        "legal-003",
+        "people-003"
+      ],
+      "created": "2026-04-07",
+      "last_reviewed": "2026-05-09",
+      "next_review": "2026-11-09",
+      "summary": "Quy Nhơn University (QNU) + ICSLab là đối tác phát triển nhân tài địa phương cho QNSC. Việc nhắc công khai QNU đang chờ xác nhận.",
+      "body_text": "Quy Nhơn University (QNU) + ICSLab là đối tác phát triển nhân tài địa phương — nguồn kỹ sư cho QNSC. Kết hợp với chương trình đào tạo thực hành — xem OJT . Quan hệ ICSLab: Hợp tác ICSLab / HCMUT . Open item Việc nhắc QNU công khai đang chờ xác nhận trước khi đưa vào vật liệu đối ngoại."
+    },
+    {
+      "external_id": "people-002",
+      "dept": "people",
+      "domain": "OJT",
+      "type": "HOWTO",
+      "title": "Chương trình OJT (Arcana curriculum)",
+      "tags": [
+        "ojt",
+        "training",
+        "arcana",
+        "onboarding",
+        "dv",
+        "pd"
+      ],
+      "status": "published",
+      "sensitivity": "internal",
+      "owner": "quang",
+      "reviewers": [
+        "afzal"
+      ],
+      "related": [
+        "people-001",
+        "eng-003",
+        "legal-001"
+      ],
+      "created": "2026-04-19",
+      "last_reviewed": "2026-04-19",
+      "next_review": "2026-10-19",
+      "summary": "Chương trình on-the-job-training cho kỹ sư mới, dựa trên curriculum DV+PD cấp phép từ Arcana/AMPL (MILSSA Training IP).",
+      "body_text": "Mục tiêu: đào tạo kỹ sư mới đạt năng lực DV/PD qua thực hành. Curriculum nền tảng là Training IP License từ Arcana/AMPL (MILSSA) — bao gồm DV + PD. Luồng Tuyển từ QNU/ICSLab pipeline . Học nền theo curriculum Arcana (DV → xem SOP DV ; PD → SOP PD ). Thực hành trên Demo IP (xem Dựng Demo IP )."
+    },
+    {
+      "external_id": "people-003",
+      "dept": "people",
+      "domain": "Hiring",
+      "type": "DECISION",
+      "title": "Tuyển dụng critical: ML/compiler owner (đang trống)",
+      "tags": [
+        "hiring",
+        "ml",
+        "compiler",
+        "critical-path",
+        "opencim"
+      ],
+      "status": "needs_update",
+      "sensitivity": "confidential",
+      "owner": "quang",
+      "reviewers": [
+        "linh",
+        "thao"
+      ],
+      "related": [
+        "eng-001",
+        "spine-002"
+      ],
+      "created": "2026-05-02",
+      "last_reviewed": "2026-05-02",
+      "next_review": "2026-06-02",
+      "summary": "Vai trò ML/compiler owner cho OpenCIM CHƯA lấp và nằm trên critical path — phải resolved trước Month 1. Đây là rủi ro nhân sự cao nhất của chương trình.",
+      "body_text": "Bối cảnh Chương trình OpenCIM MicroSoC cần một ML/compiler owner — vai trò nằm trên critical path . Critical — chưa lấp Vai trò này phải được resolved trước Month 1 của chương trình. Đây là rủi ro nhân sự cao nhất hiện tại. Trạng thái Đang tuyển. Bài NEEDS_UPDATE — cập nhật khi có ứng viên/chốt. Hồ sơ nhân sự: Cơ cấu tổ chức ."
+    }
+  ]
+}

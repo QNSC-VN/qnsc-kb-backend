@@ -2,7 +2,19 @@ import uuid
 from datetime import datetime
 from sqlalchemy import ForeignKey, String, Integer, Text, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from pgvector.sqlalchemy import Vector
+try:
+    from pgvector.sqlalchemy import Vector
+except ModuleNotFoundError:  # Keep domain/unit tests runnable without the optional DB extension.
+    from sqlalchemy.types import UserDefinedType
+
+    class Vector(UserDefinedType):
+        cache_ok = True
+
+        def __init__(self, dimensions: int):
+            self.dimensions = dimensions
+
+        def get_col_spec(self, **kwargs):
+            return f"VECTOR({self.dimensions})"
 from src.core.config import settings
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 

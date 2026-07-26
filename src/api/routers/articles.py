@@ -35,6 +35,7 @@ logger = structlog.get_logger()
 # Schema definitions
 class ArticleCreate(BaseModel):
     title: str
+    external_id: str | None = None
     body_md: str
     dept: str
     domain: str
@@ -87,6 +88,7 @@ class OwnerResponse(BaseModel):
 
 class ArticleResponse(BaseModel):
     id: uuid.UUID
+    external_id: str | None = None
     title: str
     body_md: str
     dept: str
@@ -384,6 +386,7 @@ async def create_article(
     return await article_service.create_article(
         user=current_user,
         title=article_in.title,
+        external_id=article_in.external_id,
         body_md=restructure_result.body_md,
         dept=article_in.dept,
         domain=article_in.domain,
