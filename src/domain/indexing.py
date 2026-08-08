@@ -3,10 +3,10 @@ import re
 
 import structlog
 
-from src.api.deps import SessionLocal
+from src.api.deps import SessionLocal, set_database_context
 from src.core.config import settings
 from src.domain.permissions import PermissionService
-from src.domain.search_service import get_text_embedding
+from src.domain.search_service import get_text_embeddings
 from src.models.chunk import ArticleChunk, ParentChunk
 from src.models.ops import DeadLetterJob
 from src.models.article import DocumentSource
@@ -50,6 +50,7 @@ def _match_source_page(text: str, source_pages: list[tuple[int, str]]) -> int | 
 
 async def set_index_status(article_id: uuid.UUID, status: str, error: str | None = None) -> None:
     async with SessionLocal() as db:
+        await set_database_context(db, None, True)
         article_repo = ArticleRepository(db)
         article = await article_repo.get_by_id(article_id)
         if article:
@@ -62,6 +63,7 @@ async def index_article(article_id: uuid.UUID) -> None:
     """Create searchable chunks in-process while Celery is disabled."""
     await set_index_status(article_id, "processing")
     async with SessionLocal() as db:
+        await set_database_context(db, None, True)
         async with article_lock(db, str(article_id)):
             article_repo = ArticleRepository(db)
             chunk_repo = ChunkRepository(db)
@@ -122,6 +124,7 @@ async def index_article(article_id: uuid.UUID) -> None:
                     section_ref = f"Section {section_idx + 1}"
                     section_text = section_body.strip()
                 child_chunks = []
+                pending_children: list[tuple[str, int | None, uuid.UUID]] = []
                 child_index = 0
                 for parent_spec in create_parent_child_chunks(section_text):
                     parent_text = str(parent_spec["parent_text"])
@@ -132,19 +135,22 @@ async def index_article(article_id: uuid.UUID) -> None:
                     for child_text in parent_spec["children"]:
                         clean_text = str(child_text).strip()
                         child_page_number = page_number or _match_source_page(clean_text, source_pages) or parent_page_number
-                        embedding = await get_text_embedding(clean_text)
-                        if embedding is None:
-                            logger.warning("Article chunk embedding unavailable", article_id=str(article_id), chunk_index=child_index)
-                            embedding_failures.append({"section": section_ref, "chunk_index": child_index})
-                            continue
+                        pending_children.append((clean_text, child_page_number, parent.id))
+                        child_index += 1
+
+                embeddings = await get_text_embeddings([item[0] for item in pending_children])
+                if embeddings is None or len(embeddings) != len(pending_children):
+                    embedding_failures.extend({"section": section_ref, "chunk_index": index} for index in range(len(pending_children)))
+                else:
+                    for child_index, ((clean_text, child_page_number, parent_id), embedding) in enumerate(zip(pending_children, embeddings)):
                         child_chunks.append(
                             ArticleChunk(
                                 article_id=article_id,
-                                parent_chunk_id=parent.id,
+                                parent_chunk_id=parent_id,
                                 chunk_text=clean_text,
                                 embedding=embedding,
                                 embedding_model=settings.EMBEDDING_MODEL,
-                                embedding_version="v1.0",
+                                embedding_version=settings.EMBEDDING_VERSION,
                                 access_group_bitmap=PermissionService.calculate_article_bitmask(article),
                                 department_id=article.dept,
                                 sensitivity=article.sensitivity,
@@ -153,7 +159,6 @@ async def index_article(article_id: uuid.UUID) -> None:
                                 page_number=child_page_number,
                             )
                         )
-                        child_index += 1
 
                 if child_chunks:
                     await chunk_repo.create_child_chunks(child_chunks)
@@ -168,6 +173,7 @@ async def index_article(article_id: uuid.UUID) -> None:
                 ))
                 await db.commit()
                 logger.warning("Embedding failures recorded in DLQ", article_id=str(article_id), failure_count=len(embedding_failures))
+                raise RuntimeError(f"Embedding unavailable for {len(embedding_failures)} chunk(s)")
             article.index_status = "ready"
             article.index_error = None
             await db.commit()
@@ -175,6 +181,7 @@ async def index_article(article_id: uuid.UUID) -> None:
 
 async def recompute_article_permissions(article_id: uuid.UUID) -> None:
     async with SessionLocal() as db:
+        await set_database_context(db, None, True)
         async with article_lock(db, str(article_id)):
             article_repo = ArticleRepository(db)
             chunk_repo = ChunkRepository(db)
@@ -194,5 +201,6 @@ async def recompute_article_permissions(article_id: uuid.UUID) -> None:
 
 async def delete_article_chunks(article_id: uuid.UUID) -> None:
     async with SessionLocal() as db:
+        await set_database_context(db, None, True)
         await ChunkRepository(db).delete_by_article_id(article_id)
         logger.info("Article chunks deleted", article_id=str(article_id))

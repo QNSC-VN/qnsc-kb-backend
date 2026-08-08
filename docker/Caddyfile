@@ -1,0 +1,21 @@
+{$PUBLIC_HOSTNAME} {
+    encode gzip
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; img-src 'self' data: blob:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self';"
+    }
+    handle /api/* {
+        reverse_proxy api:8000
+    }
+    handle /health/* {
+        reverse_proxy api:8000
+    }
+    handle {
+        reverse_proxy frontend:80
+    }
+}

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Sequence
-from sqlalchemy import select, delete, and_, func, update
+from sqlalchemy import case, select, delete, and_, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.models.governance import PendingDraft, Gap, AuditLog
@@ -27,10 +27,16 @@ class GovernanceRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_drafts(self, status: str | None = None) -> Sequence[PendingDraft]:
+    async def list_drafts(self, status: str | None = None, company_domain: str | None = None, dept: str | None = None, depts: Sequence[str] | None = None) -> Sequence[PendingDraft]:
         stmt = select(PendingDraft)
         if status:
             stmt = stmt.where(PendingDraft.status == status)
+        if company_domain:
+            stmt = stmt.where(PendingDraft.company_domain == company_domain)
+        if depts:
+            stmt = stmt.where(PendingDraft.dept.in_(list(depts)))
+        elif dept:
+            stmt = stmt.where(PendingDraft.dept == dept)
         result = await self.db.execute(stmt.order_by(PendingDraft.created_at.desc()))
         return result.scalars().all()
 
@@ -41,29 +47,36 @@ class GovernanceRepository:
         return draft
 
     # Gap Queue
-    async def log_gap(self, query: str, dept: str | None = None) -> Gap:
-        # Check if query already exists in gaps
-        result = await self.db.execute(select(Gap).where(Gap.query == query))
+    async def log_gap(self, query: str, company_domain: str, dept: str | None = None) -> Gap:
+        # A query can legitimately be a gap in more than one tenant.
+        result = await self.db.execute(
+            select(Gap).where(Gap.query == query, Gap.company_domain == company_domain)
+        )
         gap = result.scalar_one_or_none()
         if gap:
             gap.count += 1
             gap.updated_at = datetime.utcnow()
         else:
-            gap = Gap(query=query, count=1, dept=dept, status="open")
+            gap = Gap(query=query, company_domain=company_domain, count=1, dept=dept, status="open")
             self.db.add(gap)
         await self.db.commit()
         await self.db.refresh(gap)
         return gap
 
-    async def list_gaps(self, status: str | None = None) -> Sequence[Gap]:
+    async def list_gaps(self, status: str | None = None, company_domain: str | None = None) -> Sequence[Gap]:
         stmt = select(Gap)
         if status:
             stmt = stmt.where(Gap.status == status)
+        if company_domain:
+            stmt = stmt.where(Gap.company_domain == company_domain)
         result = await self.db.execute(stmt.order_by(Gap.count.desc()))
         return result.scalars().all()
 
-    async def get_gap(self, gap_id: uuid.UUID) -> Gap | None:
-        result = await self.db.execute(select(Gap).where(Gap.id == gap_id))
+    async def get_gap(self, gap_id: uuid.UUID, company_domain: str | None = None) -> Gap | None:
+        stmt = select(Gap).where(Gap.id == gap_id)
+        if company_domain:
+            stmt = stmt.where(Gap.company_domain == company_domain)
+        result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def update_gap(self, gap: Gap) -> Gap:
@@ -135,11 +148,12 @@ class GovernanceRepository:
         )
         ai_cache_hits = ai_cache_res.scalar_one() or 0
 
-        request_result = await self.db.execute(select(ApiRequestMetric.status_code, ApiRequestMetric.duration_ms))
-        request_rows = request_result.all()
-        durations = sorted(float(duration) for _, duration in request_rows)
-        error_requests = sum(1 for status_code, _ in request_rows if int(status_code) >= 500)
-        p95_index = max(0, min(len(durations) - 1, int(len(durations) * 0.95) - 1)) if durations else 0
+        request_metrics = await self.db.execute(select(
+            func.count(ApiRequestMetric.id),
+            func.coalesce(func.sum(case((ApiRequestMetric.status_code >= 500, 1), else_=0)), 0),
+            func.percentile_cont(0.95).within_group(ApiRequestMetric.duration_ms),
+        ))
+        request_count, error_requests, p95_latency = request_metrics.one()
         ai_usage_result = await self.db.execute(
             select(func.coalesce(func.sum(AiUsageLog.tokens_used), 0), func.coalesce(func.avg(AiUsageLog.latency_ms), 0))
         )
@@ -156,9 +170,9 @@ class GovernanceRepository:
             "helpful_rate": helpful_rate,
             "search_miss_rate": (search_misses / search_total * 100.0) if search_total else 0.0,
             "ai_cache_hit_rate": (ai_cache_hits / ai_total * 100.0) if ai_total else 0.0,
-            "api_request_count": len(request_rows),
-            "api_error_rate": (error_requests / len(request_rows) * 100.0) if request_rows else 0.0,
-            "api_p95_latency_ms": durations[p95_index] if durations else 0.0,
+            "api_request_count": int(request_count or 0),
+            "api_error_rate": (int(error_requests or 0) / int(request_count) * 100.0) if request_count else 0.0,
+            "api_p95_latency_ms": float(p95_latency or 0.0),
             "ai_requests": ai_total,
             "ai_tokens_total": int(ai_tokens_total or 0),
             "ai_average_latency_ms": float(ai_latency_avg or 0),

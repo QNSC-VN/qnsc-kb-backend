@@ -14,6 +14,10 @@ def context_recall(retrieved_chunk_ids: Iterable[str], expected_chunk_ids: Itera
 
 def lexical_faithfulness(answer: str, context: str) -> float:
     """Conservative proxy: proportion of answer content words in retrieved context."""
+    if not context.strip() and re.search(r"not found|no information|không tìm thấy|không có thông tin", answer, re.IGNORECASE):
+        return 1.0
+    # Citation identifiers are provenance metadata, not answer claims.
+    answer = re.sub(r"\[[^\]]+\]", " ", answer)
     answer_terms = {item for item in re.findall(r"[\w'-]+", answer.lower()) if len(item) > 3}
     if not answer_terms:
         return 1.0

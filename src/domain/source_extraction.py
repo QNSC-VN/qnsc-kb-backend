@@ -6,6 +6,10 @@ import io
 import json
 import os
 import re
+import socket
+import struct
+import subprocess
+import zipfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -22,6 +26,26 @@ SUPPORTED_EXTENSIONS = {
 
 class SourceExtractionError(ValueError):
     pass
+
+
+def _scan_with_clamd(data: bytes) -> None:
+    """Scan bytes through ClamAV's TCP INSTREAM protocol without temp files."""
+    host = settings.MALWARE_SCANNER_HOST
+    if not host:
+        raise SourceExtractionError("Malware scanning is unavailable")
+    try:
+        with socket.create_connection((host, settings.MALWARE_SCANNER_PORT), timeout=10) as client:
+            client.settimeout(30)
+            client.sendall(b"zINSTREAM\0")
+            for offset in range(0, len(data), 1024 * 1024):
+                chunk = data[offset:offset + 1024 * 1024]
+                client.sendall(struct.pack("!I", len(chunk)) + chunk)
+            client.sendall(struct.pack("!I", 0))
+            response = client.recv(4096).decode("utf-8", errors="replace")
+    except OSError as exc:
+        raise SourceExtractionError("Malware scanning is unavailable") from exc
+    if "OK" not in response or "FOUND" in response:
+        raise SourceExtractionError("The uploaded file failed malware scanning")
 
 
 def _page(number: int, text: str) -> dict[str, Any]:
@@ -41,6 +65,58 @@ def _token_coverage(original: str, candidate: str) -> float:
         return 1.0
     candidate_tokens = set(re.findall(r"[A-Za-zÀ-ỹ0-9][A-Za-zÀ-ỹ0-9_-]{3,}", candidate.lower()))
     return len(original_tokens & candidate_tokens) / len(original_tokens)
+
+
+def _validate_archive(data: bytes) -> None:
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            members = archive.infolist()
+            if len(members) > settings.MAX_SOURCE_ARCHIVE_FILES:
+                raise SourceExtractionError("The document archive contains too many files")
+            total_size = sum(max(0, item.file_size) for item in members)
+            if total_size > settings.MAX_SOURCE_UNCOMPRESSED_BYTES:
+                raise SourceExtractionError("The document archive expands beyond the allowed size")
+            for item in members:
+                if item.compress_size and item.file_size / item.compress_size > 10_000:
+                    raise SourceExtractionError("The document archive has an unsafe compression ratio")
+    except zipfile.BadZipFile as exc:
+        raise SourceExtractionError("The uploaded document is not a valid archive") from exc
+
+
+def _validate_source_bytes(filename: str, data: bytes) -> None:
+    extension = Path(filename).suffix.lower()
+    if extension in {".docx", ".xlsx", ".xlsm", ".pptx"}:
+        if not data.startswith(b"PK"):
+            raise SourceExtractionError("The uploaded Office document has an invalid file signature")
+        _validate_archive(data)
+    elif extension == ".pdf" and not data.lstrip().startswith(b"%PDF"):
+        raise SourceExtractionError("The uploaded PDF has an invalid file signature")
+    elif extension in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}:
+        try:
+            from PIL import Image
+            Image.MAX_IMAGE_PIXELS = settings.MAX_SOURCE_IMAGE_PIXELS
+            with Image.open(io.BytesIO(data)) as image:
+                image.verify()
+        except Exception as exc:
+            raise SourceExtractionError("The uploaded image is invalid or unsafe") from exc
+
+    if settings.MALWARE_SCAN_ENABLED:
+        if settings.MALWARE_SCANNER_HOST:
+            _scan_with_clamd(data)
+        else:
+            try:
+                result = subprocess.run(
+                    [settings.MALWARE_SCANNER_COMMAND, "--stream", "--no-summary"],
+                    input=data,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    check=False,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+                raise SourceExtractionError("Malware scanning is unavailable") from exc
+            if result.returncode != 0:
+                raise SourceExtractionError("The uploaded file failed malware scanning")
 
 
 @lru_cache(maxsize=1)
@@ -157,6 +233,26 @@ def _extract_pdf_pages(data: bytes) -> list[dict[str, Any]]:
         reader = PdfReader(io.BytesIO(data))
         pages = [_page(index, page.extract_text() or "") for index, page in enumerate(reader.pages, start=1)]
         if any(item["text"] for item in pages):
+            # Mixed PDFs are common: retain embedded text and OCR only image
+            # pages instead of silently dropping scanned appendices.
+            if any(not item["text"] for item in pages):
+                try:
+                    import fitz
+                    from PIL import Image
+                    document = fitz.open(stream=data, filetype="pdf")
+                    for index, item in enumerate(pages):
+                        if item["text"]:
+                            continue
+                        page = document[index]
+                        if not page.get_images(full=True):
+                            continue
+                        pixmap = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5), alpha=False)
+                        item["text"] = _ocr_image(Image.open(io.BytesIO(pixmap.tobytes("png"))))
+                except Exception:
+                    # Embedded-text PDFs remain usable when OCR is not
+                    # installed; blank pages are preserved rather than
+                    # converting the entire document to a failing request.
+                    pass
             return pages
     except Exception:
         pass
@@ -219,6 +315,7 @@ def extract_source_pages(filename: str, data: bytes) -> list[dict[str, Any]]:
         )
     if not data:
         raise SourceExtractionError("The uploaded file is empty.")
+    _validate_source_bytes(filename, data)
     if extension == ".pdf":
         pages = _extract_pdf_pages(data)
     elif extension == ".docx":
@@ -235,9 +332,14 @@ def extract_source_pages(filename: str, data: bytes) -> list[dict[str, Any]]:
     else:
         from PIL import Image
         import numpy as np
+        Image.MAX_IMAGE_PIXELS = settings.MAX_SOURCE_IMAGE_PIXELS
         image = Image.open(io.BytesIO(data)).convert("RGB")
         pages = [_page(1, _ocr_image(np.asarray(image)))]
     pages = [item for item in pages if item["text"]]
+    if len(pages) > settings.MAX_SOURCE_PAGES:
+        raise SourceExtractionError(f"Documents are limited to {settings.MAX_SOURCE_PAGES} pages")
+    if sum(len(str(item["text"])) for item in pages) > settings.MAX_SOURCE_TEXT_CHARS:
+        raise SourceExtractionError("The extracted document text is too large")
     if not pages:
         raise SourceExtractionError("No readable text was found in the uploaded file.")
     return pages

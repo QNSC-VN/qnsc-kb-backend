@@ -1,8 +1,8 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import get_db, get_current_user
 from src.models import User
@@ -13,17 +13,16 @@ from src.domain.interactions import InteractionsService
 router = APIRouter()
 
 class CommentCreate(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=4_000)
 
 class VoteCast(BaseModel):
-    value: int  # 1 for upvote, -1 for downvote, 0 to clear
+    value: Literal[-1, 0, 1]  # 1 for upvote, -1 for downvote, 0 to clear
 
 class UserBrief(BaseModel):
     id: uuid.UUID
     name: str
     email: str
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 class CommentResponse(BaseModel):
     id: uuid.UUID
@@ -33,8 +32,7 @@ class CommentResponse(BaseModel):
     created_at: datetime if "datetime" in locals() else Any
     user: UserBrief
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 @router.post("/articles/{id}/comments")
 async def add_comment(

@@ -1,6 +1,7 @@
 import uuid
 from src.models.user import User, AccessGroup
 from src.models.article import Article
+from src.domain.rbac import AuthorizationService
 
 class PermissionService:
     @staticmethod
@@ -15,7 +16,7 @@ class PermissionService:
         If user is Admin, we return a fully set bitmask (e.g. all 1s).
         All users get the public bit (position 0) automatically.
         """
-        if user.role == "Admin":
+        if AuthorizationService.has_permission(user, "article.read", requested_scope="global"):
             # Enable first 62 bits
             return (1 << 62) - 1
             
@@ -40,52 +41,42 @@ class PermissionService:
             if group.bitmask_position is not None:
                 bitmask |= (1 << group.bitmask_position)
         
-        # If no access groups are specified but it's not public (e.g. default internal),
-        # we default to public bit to avoid locking it out completely, or we handle it based on role.
-        if bitmask == 0:
-            bitmask = 1 << cls.get_public_bit()
-            
+        # Restricted/internal articles without an explicit access group must
+        # fail closed. Treating them as public leaks documents whenever an
+        # editor forgets to select a group.
         return bitmask
 
     @classmethod
     def can_view_article(cls, user: User, article: Article) -> bool:
-        if user.role == "Admin":
-            return True
-
-        if user.role == "CEO" and user.company_domain == article.company_domain:
-            return True
-            
-        if user.role == "Department Owner" and user.dept == article.dept:
-            return True
-
-        if article.owner_id == user.id:
-            return True
-
-        # Check drafts access
-        if article.status == "draft" and user.role != "Reviewer":
+        if article.status == "deleted" or getattr(article, "lifecycle_status", "active") not in (None, "active"):
             return False
-
-        # Bitwise match
+        if not AuthorizationService.can_access_article_departments(user, article):
+            return False
+        if article.status in {"draft", "pending_review", "archived"}:
+            # Unpublished content is never ordinary knowledge-base content.
+            # Owners and governance users may inspect it for review/history,
+            # but a reader must not discover it through direct IDs or search.
+            governance_access = any(
+                AuthorizationService.has_permission(user, permission, article, scope)
+                for permission in ("article.review", "article.publish", "article.edit", "article.delete")
+                for scope in ("own", "department", "company", "global")
+            )
+            if article.owner_id != user.id and not governance_access:
+                return False
+        if not any(AuthorizationService.has_permission(user, "article.read", article, scope) for scope in ("own", "department", "company")):
+            return False
+        if AuthorizationService.has_full_company_article_access(user):
+            return True
+        if AuthorizationService.has_narrow_article_access(user, article):
+            return True
         user_mask = cls.calculate_user_bitmask(user)
         art_mask = cls.calculate_article_bitmask(article)
         return (user_mask & art_mask) != 0
 
     @classmethod
     def can_edit_article(cls, user: User, article: Article) -> bool:
-        if user.role == "Admin":
-            return True
-
-        if user.role == "CEO" and user.company_domain == article.company_domain:
-            return True
-
-        if user.role == "Department Owner" and user.dept == article.dept:
-            return True
-
-        if article.owner_id == user.id:
-            return True
-
-        return False
+        return any(AuthorizationService.has_permission(user, "article.edit", article, scope) for scope in ("own", "department", "company"))
 
     @classmethod
     def can_delete_article(cls, user: User, article: Article) -> bool:
-        return cls.can_edit_article(user, article)
+        return any(AuthorizationService.has_permission(user, "article.delete", article, scope) for scope in ("own", "department", "company"))

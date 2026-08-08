@@ -43,5 +43,21 @@ def get_bge_embedding(text: str) -> list[float]:
         return vector.tolist()
     except Exception as e:
         logger.error("Error generating local embedding", error=str(e))
-        # Fallback dummy vector of correct dimension
-        return [0.0] * settings.EMBEDDING_DIMENSION
+        # Never silently insert a zero vector. It makes an indexing outage look
+        # healthy and contaminates retrieval with meaningless candidates.
+        raise RuntimeError("Embedding generation failed") from e
+
+
+def get_bge_embeddings(texts: list[str]) -> list[list[float]]:
+    """Encode a batch so indexing amortizes model overhead across chunks."""
+    if not texts:
+        return []
+    if settings.OPENAI_API_KEY == "mock" or settings.EMBEDDING_MODEL == "mock":
+        return [[0.0] * settings.EMBEDDING_DIMENSION for _ in texts]
+    try:
+        model = BGEModelSingleton.get_model()
+        vectors = model.encode(texts, normalize_embeddings=True, batch_size=32)
+        return [vector.tolist() for vector in vectors]
+    except Exception as exc:
+        logger.error("Error generating local embedding batch", error=str(exc), batch_size=len(texts))
+        raise RuntimeError("Embedding batch generation failed") from exc

@@ -13,6 +13,14 @@ class InteractionsService:
         self.interaction_repo = interaction_repo
         self.article_repo = article_repo
 
+    async def _visible_article(self, user: User, article_id: uuid.UUID) -> Article:
+        article = await self.article_repo.get_by_id(article_id)
+        if not article or article.status == "deleted":
+            raise HTTPException(status_code=404, detail="Article not found")
+        if not PermissionService.can_view_article(user, article):
+            raise HTTPException(status_code=403, detail="Access denied")
+        return article
+
     async def add_comment(self, user: User, article_id: uuid.UUID, text: str) -> Comment:
         article = await self.article_repo.get_by_id(article_id)
         if not article or article.status == "deleted":
@@ -67,6 +75,7 @@ class InteractionsService:
         return await self.interaction_repo.get_votes_summary(article_id)
 
     async def get_user_vote(self, user: User, article_id: uuid.UUID) -> int:
+        await self._visible_article(user, article_id)
         return await self.interaction_repo.get_user_vote(article_id, user.id)
 
     async def get_votes_summary(self, user: User, article_id: uuid.UUID) -> dict[str, int]:
@@ -92,10 +101,14 @@ class InteractionsService:
         return True
 
     async def remove_bookmark(self, user: User, article_id: uuid.UUID) -> bool:
+        await self._visible_article(user, article_id)
         return await self.interaction_repo.remove_bookmark(user.id, article_id)
 
     async def list_bookmarks(self, user: User) -> Sequence[Article]:
-        return await self.interaction_repo.get_bookmarks(user.id)
+        bookmarks = await self.interaction_repo.get_bookmarks(user.id)
+        # A bookmark is a convenience record, never a durable access grant.
+        return [article for article in bookmarks if PermissionService.can_view_article(user, article)]
 
     async def is_bookmarked(self, user: User, article_id: uuid.UUID) -> bool:
+        await self._visible_article(user, article_id)
         return await self.interaction_repo.is_bookmarked(user.id, article_id)

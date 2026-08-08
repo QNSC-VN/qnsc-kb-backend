@@ -1,0 +1,27 @@
+from pathlib import Path
+
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
+
+def test_migrations_have_one_current_head():
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "migrations" / "alembic.ini"))
+    script = ScriptDirectory.from_config(config)
+    assert script.get_heads() == ["20260807_35"]
+
+
+def test_production_compose_is_explicitly_hardened():
+    root = Path(__file__).resolve().parents[2]
+    compose = (root / "docker-compose.production.yml").read_text(encoding="utf-8")
+    assert "AUTO_CREATE_SCHEMA: \"false\"" in compose
+    assert "ALLOW_SELF_REGISTRATION: \"false\"" in compose
+    assert "JOB_MODE: celery" in compose
+    assert "MIGRATION_DATABASE_URL" in compose
+    assert "APP_DATABASE_ROLE" in compose
+    assert "ENABLE_RLS: \"true\"" in compose
+    assert "5432:5432" not in compose
+    assert "6379:6379" not in compose
+    assert "caddy:2.8-alpine" in compose
+    assert "PUBLIC_HOSTNAME" in compose
+    assert "GEMINI_MODEL" in compose

@@ -91,7 +91,7 @@ class InteractionRepository:
             select(Article)
             .join(Bookmark, Bookmark.article_id == Article.id)
             .where(and_(Bookmark.user_id == user_id, Article.status == "published"))
-            .options(selectinload(Article.tags), selectinload(Article.owner))
+            .options(selectinload(Article.tags), selectinload(Article.owner), selectinload(Article.access_groups))
         )
         return result.scalars().all()
 

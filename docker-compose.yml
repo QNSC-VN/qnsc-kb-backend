@@ -11,6 +11,8 @@ services:
       POSTGRES_DB: qnsc_kb
     volumes:
       - pgdata:/var/lib/postgresql/data
+    mem_limit: 768m
+    mem_reservation: 256m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -23,6 +25,8 @@ services:
       - "6379:6379"
     volumes:
       - redisdata:/data
+    mem_limit: 128m
+    mem_reservation: 32m
     healthcheck:
       test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
       interval: 5s
@@ -39,7 +43,12 @@ services:
       - .:/app
       - source_data:/app/storage/sources
       - ./connector_sources:/app/storage/connectors
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    # Restrict reloads to application source.  Test runs and Celery's local
+    # schedule database must not restart the API and reload the embedding
+    # model during ordinary local development.
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src --reload-exclude tests/* --reload-exclude celerybeat-schedule* --reload-exclude .pytest_cache/*
+    mem_limit: 2g
+    mem_reservation: 512m
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/qnsc_kb
       - REDIS_URL=redis://redis:6379/0
@@ -50,15 +59,62 @@ services:
         condition: service_healthy
 
   worker:
-    profiles: ["future-celery"]
     build:
       context: .
       dockerfile: docker/Dockerfile.worker
     volumes:
       - .:/app
+    command: celery -A src.workers.celery_app worker --pool=solo --concurrency=1 --prefetch-multiplier=1 --loglevel=info
+    mem_limit: 2g
+    mem_reservation: 512m
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/qnsc_kb
       - REDIS_URL=redis://redis:6379/0
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+      - MALLOC_ARENA_MAX=2
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID:-common}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:8000/api/v1/connectors/oauth/callback}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/v1/connectors/oauth/callback}
+      - CONNECTOR_WEBHOOK_BASE_URL=${CONNECTOR_WEBHOOK_BASE_URL:-}
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      - TOKENIZERS_PARALLELISM=false
+      - MALLOC_ARENA_MAX=2
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    volumes:
+      - .:/app
+    command: celery -A src.workers.celery_app beat --loglevel=info
+    mem_limit: 256m
+    mem_reservation: 64m
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/qnsc_kb
+      - REDIS_URL=redis://redis:6379/0
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID:-}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET:-}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID:-common}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI:-http://localhost:8000/api/v1/connectors/oauth/callback}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://localhost:8000/api/v1/connectors/oauth/callback}
+      - CONNECTOR_WEBHOOK_BASE_URL=${CONNECTOR_WEBHOOK_BASE_URL:-}
+      - OMP_NUM_THREADS=1
+      - MALLOC_ARENA_MAX=2
     depends_on:
       db:
         condition: service_healthy

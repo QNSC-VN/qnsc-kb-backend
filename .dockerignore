@@ -1,0 +1,25 @@
+# Secrets and local runtime state must never enter a deployable image.
+.env
+.env.*
+.git
+.gitignore
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# User data and operational artifacts are mounted at runtime or kept outside
+# the image. Including them risks both secret disclosure and stale content.
+storage/
+connector_sources/
+backups/
+celerybeat-schedule
+
+# Development-only files.
+tests/
+docs/
+evaluation/
+*.log

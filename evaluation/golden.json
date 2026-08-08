@@ -14,5 +14,37 @@
     "context": "The outage SOP says to restart the service, verify health checks, and escalate when checks remain red.",
     "retrieved_chunk_ids": ["outage-sop-1"],
     "expected_chunk_ids": ["outage-sop-1"]
+  },
+  {
+    "id": "vietnamese-grounded-policy",
+    "answer": "Nhân viên phải gửi yêu cầu công tác trước khi đặt vé máy bay.",
+    "expected_answer": "Nhân viên phải gửi yêu cầu công tác trước khi đặt vé máy bay.",
+    "context": "Chính sách công tác yêu cầu nhân viên gửi yêu cầu công tác trước khi đặt vé máy bay.",
+    "retrieved_chunk_ids": ["travel-policy-vi-1"],
+    "expected_chunk_ids": ["travel-policy-vi-1"]
+  },
+  {
+    "id": "no-answer",
+    "answer": "The requested information was not found in the knowledge base.",
+    "expected_answer": "The requested information was not found in the knowledge base.",
+    "context": "",
+    "retrieved_chunk_ids": [],
+    "expected_chunk_ids": []
+  },
+  {
+    "id": "definition-grounding",
+    "answer": "RTO is the target time to restore a service after disruption.",
+    "expected_answer": "RTO is the target time to restore a service after disruption.",
+    "context": "Recovery Time Objective (RTO) is the target time to restore a service after a disruption.",
+    "retrieved_chunk_ids": ["bc-dr-1"],
+    "expected_chunk_ids": ["bc-dr-1"]
+  },
+  {
+    "id": "restricted-document-citation",
+    "answer": "Access reviews are required quarterly [security-policy-1].",
+    "expected_answer": "Access reviews are required quarterly.",
+    "context": "The security policy requires quarterly access reviews.",
+    "retrieved_chunk_ids": ["security-policy-1"],
+    "expected_chunk_ids": ["security-policy-1"]
   }
 ]

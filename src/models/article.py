@@ -13,11 +13,21 @@ article_access = Table(
     Column("group_id", ForeignKey("access_groups.id", ondelete="CASCADE"), primary_key=True),
 )
 
+# One article may be visible in several departments. ``articles.dept`` is
+# retained as the primary/legacy department for synchronized integrations.
+article_departments = Table(
+    "article_departments",
+    Base.metadata,
+    Column("article_id", ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True),
+    Column("department_id", ForeignKey("departments.id", ondelete="CASCADE"), primary_key=True),
+)
+
 class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "articles"
+    __table_args__ = (UniqueConstraint("company_domain", "external_id", name="uq_articles_company_external_id"),)
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    external_id: Mapped[str | None] = mapped_column(String(120), unique=True, nullable=True, index=True)
+    external_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -43,6 +53,9 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     access_groups: Mapped[list["AccessGroup"]] = relationship(
         "AccessGroup", secondary=article_access
     )
+    departments: Mapped[list["Department"]] = relationship(
+        "Department", secondary=article_departments, lazy="selectin"
+    )
     versions: Mapped[list["ArticleVersion"]] = relationship(
         "ArticleVersion", back_populates="article", cascade="all, delete-orphan"
     )
@@ -59,6 +72,7 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
 class ArticleVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "article_versions"
+    __table_args__ = (UniqueConstraint("article_id", "version", name="uq_article_versions_article_version"),)
 
     article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)

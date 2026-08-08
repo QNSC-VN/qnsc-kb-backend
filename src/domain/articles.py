@@ -8,8 +8,10 @@ from src.models.user import User
 from src.repositories.article import ArticleRepository
 from src.repositories.user import UserRepository
 from src.domain.permissions import PermissionService
+from src.domain.rbac import AuthorizationService
 from src.domain.events import event_bus
 from src.repositories.audit import AuditRepository
+from src.domain.departments import resolve_active_department
 
 logger = structlog.get_logger()
 
@@ -22,6 +24,15 @@ class ArticleService:
     async def _audit(self, user_id: uuid.UUID, action: str, article_id: uuid.UUID) -> None:
         if self.audit_repo:
             await self.audit_repo.record(user_id, action, "article", str(article_id))
+
+    def ensure_can_create(self, user: User, dept: str) -> None:
+        """Fail before any costly side effect, including AI restructuring."""
+        draft_resource = Article(company_domain=user.company_domain, dept=dept, owner_id=user.id)
+        if not any(
+            AuthorizationService.has_permission(user, "article.create", draft_resource, scope)
+            for scope in ("own", "department", "company", "global")
+        ):
+            raise HTTPException(status_code=403, detail="Not authorized to create articles in this department")
 
     async def create_article(
         self,
@@ -39,14 +50,30 @@ class ArticleService:
         external_id: str | None = None,
         original_body_md: str | None = None,
     ) -> Article:
+        department = await resolve_active_department(self.article_repo.db, user.company_domain, dept)
+        dept = department.name
+        self.ensure_can_create(user, dept)
+        draft_resource = Article(company_domain=user.company_domain, dept=dept, owner_id=user.id)
+
         # Resolve access groups
         groups = []
         if access_group_ids:
-            groups = list(await self.user_repo.get_groups_by_ids(access_group_ids))
+            groups = list(await self.user_repo.get_groups_by_ids(access_group_ids, user.company_domain))
+            if len({group.id for group in groups}) != len(set(access_group_ids)):
+                raise HTTPException(status_code=422, detail="One or more access groups do not exist")
+
+        if sensitivity not in {"public", "internal", "confidential", "restricted"}:
+            raise HTTPException(status_code=422, detail="Invalid article sensitivity")
+        if sensitivity != "public" and not groups:
+            raise HTTPException(status_code=422, detail="Non-public articles require at least one access group")
 
         # Default sensitivity and status logic:
         # Department owners/admins can publish directly, staff create drafts
-        initial_status = "published" if user.role in ["Admin", "CEO", "Department Owner"] else "draft"
+        can_publish = any(
+            AuthorizationService.has_permission(user, "article.publish", draft_resource, scope)
+            for scope in ("own", "department", "company", "global")
+        )
+        initial_status = "published" if can_publish else "draft"
 
         article = Article(
             title=title,
@@ -63,7 +90,8 @@ class ArticleService:
             version=1,
             next_review=next_review,
             last_reviewed=datetime.utcnow() if initial_status == "published" else None,
-            access_groups=groups
+            access_groups=groups,
+            departments=[department],
         )
 
         created_article = await self.article_repo.create(article)
@@ -139,6 +167,30 @@ class ArticleService:
         if not PermissionService.can_edit_article(user, article):
             raise HTTPException(status_code=403, detail="Not authorized to edit this article")
 
+        if sensitivity is not None and sensitivity not in {"public", "internal", "confidential", "restricted"}:
+            raise HTTPException(status_code=422, detail="Invalid article sensitivity")
+
+        # Moving an article can silently turn a personal edit grant into an
+        # organization-wide data-placement action.  Allow it only to someone
+        # with edit authority over the destination department or higher.
+        target_dept = dept if dept is not None else article.dept
+        if target_dept != article.dept:
+            target_resource = Article(company_domain=article.company_domain, dept=target_dept, owner_id=article.owner_id)
+            if not any(
+                AuthorizationService.has_permission(user, "article.edit", target_resource, scope)
+                for scope in ("department", "company", "global")
+            ):
+                raise HTTPException(status_code=403, detail="Not authorized to move an article to this department")
+
+        proposed_groups = list(article.access_groups)
+        if access_group_ids is not None:
+            proposed_groups = list(await self.user_repo.get_groups_by_ids(access_group_ids, article.company_domain))
+            if len({group.id for group in proposed_groups}) != len(set(access_group_ids)):
+                raise HTTPException(status_code=422, detail="One or more access groups do not exist")
+        proposed_sensitivity = sensitivity if sensitivity is not None else article.sensitivity
+        if proposed_sensitivity != "public" and not proposed_groups:
+            raise HTTPException(status_code=422, detail="Non-public articles require at least one access group")
+
         # Track changes for permission recalculation and version incrementing
         permissions_changed = False
         content_changed = False
@@ -153,7 +205,7 @@ class ArticleService:
             content_changed = True
 
         if access_group_ids is not None:
-            new_groups = list(await self.user_repo.get_groups_by_ids(access_group_ids))
+            new_groups = proposed_groups
             # Compare access groups
             old_group_ids = {g.id for g in article.access_groups}
             new_group_ids = {g.id for g in new_groups}
@@ -183,6 +235,13 @@ class ArticleService:
             content_changed = True
 
         if status_ is not None and status_ != article.status:
+            if status_ not in {"draft", "pending_review", "published", "archived"}:
+                raise HTTPException(status_code=422, detail="Invalid article status")
+            if status_ == "published" and not any(
+                AuthorizationService.has_permission(user, "article.publish", article, scope)
+                for scope in ("own", "department", "company", "global")
+            ):
+                raise HTTPException(status_code=403, detail="Not authorized to publish articles")
             published_transition = status_ == "published" and article.status != "published"
             article.status = status_
             if status_ == "published":
@@ -242,6 +301,11 @@ class ArticleService:
         article = await self.article_repo.get_by_id(article_id)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
+
+        # Department records are the source of truth. Archived/deactivated
+        # departments must not remain reachable through an old article ID.
+        if not await resolve_active_department(self.article_repo.db, article.company_domain, article.dept, required=False):
+            raise HTTPException(status_code=404, detail="Article department is inactive or no longer exists")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")

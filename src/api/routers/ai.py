@@ -6,21 +6,24 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, exists, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 import structlog
 
-from src.api.deps import get_current_user, get_db
+from src.api.deps import SessionLocal, get_current_user, get_db, set_database_context
 from src.domain.ai_service import AIService, normalize_answer_markdown
 from src.domain.search_service import SearchService
 from src.domain.permissions import PermissionService
+from src.domain.rbac import AuthorizationService
 from src.models import User
 from src.models.article import Article
+from src.models.user import Department
 from src.models.chunk import ArticleChunk, ParentChunk
 from src.repositories.ai import AIRepository
 from src.repositories.chunk import ChunkRepository
 from src.repositories.governance import GovernanceRepository
+from src.repositories.user import UserRepository
 from src.core.rate_limit import ai_rate_limiter
 from src.repositories.feature_flags import FeatureFlagRepository
 
@@ -40,7 +43,7 @@ class ConversationRename(BaseModel):
 class FeedbackRequest(BaseModel):
     ai_usage_log_id: uuid.UUID
     rating: Literal[-1, 1]
-    comment: str | None = None
+    comment: str | None = Field(default=None, max_length=2_000)
 
 def get_ai_service(db: AsyncSession) -> AIService:
     chunk_repo = ChunkRepository(db)
@@ -64,17 +67,36 @@ async def _hydrate_citations(db: AsyncSession, user: User, citations: list[dict]
         ArticleChunk.id.in_(chunk_ids),
         Article.status == "published",
         Article.lifecycle_status == "active",
-        ArticleChunk.access_group_bitmap.op("&")(PermissionService.calculate_user_bitmask(user)) != 0,
+        exists(select(Department.id).where(
+            Department.company_domain == Article.company_domain,
+            Department.name == Article.dept,
+            Department.active.is_(True),
+        )),
     ]
-    if user.role != "Admin":
+    if not AuthorizationService.has_full_company_article_access(user) and not AuthorizationService.has_narrow_article_access(user):
+        conditions.append(ArticleChunk.access_group_bitmap.op("&")(PermissionService.calculate_user_bitmask(user)) != 0)
+    if not AuthorizationService.has_permission(user, "article.read", requested_scope="global"):
         conditions.append(Article.company_domain == user.company_domain)
+    if not AuthorizationService.has_full_company_article_access(user):
+        member_departments = AuthorizationService.member_department_names(user)
+        conditions.append(or_(
+            Article.dept.in_(member_departments),
+            Article.departments.any(Department.name.in_(member_departments)),
+        ))
     result = await db.execute(
         select(ArticleChunk)
         .join(Article, Article.id == ArticleChunk.article_id)
-        .options(selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks))
+        .options(
+            selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks),
+            selectinload(ArticleChunk.article),
+        )
         .where(*conditions)
     )
-    chunks_by_id = {str(chunk.id): chunk for chunk in result.scalars().all()}
+    chunks_by_id = {
+        str(chunk.id): chunk
+        for chunk in result.scalars().all()
+        if PermissionService.can_view_article(user, chunk.article)
+    }
     hydrated = []
     for citation in citations:
         chunk = chunks_by_id.get(str(citation.get("chunk_id")))
@@ -86,7 +108,9 @@ async def _hydrate_citations(db: AsyncSession, user: User, citations: list[dict]
                 "highlight_texts": [child.chunk_text for child in sorted(chunk.parent_chunk.child_chunks, key=lambda item: item.chunk_index)],
                 "page_number": chunk.page_number or chunk.parent_chunk.page_number,
             })
-        else:
+        elif not citation.get("chunk_id"):
+            # Preserve non-document metadata only. A citation tied to an
+            # inaccessible or deleted chunk must not reveal its title/URL.
             hydrated.append(citation)
     return hydrated
 
@@ -108,11 +132,15 @@ async def get_conversation_messages(conversation_id: uuid.UUID, current_user: Us
     messages = await repo.list_messages(conversation_id, current_user.id)
     response = []
     for message in messages:
-        citations = await _hydrate_citations(db, current_user, json.loads(message.citations or "[]"))
+        raw_citations = json.loads(message.citations or "[]")
+        citations = await _hydrate_citations(db, current_user, raw_citations)
+        inaccessible_source = any(item.get("chunk_id") for item in raw_citations) and sum(bool(item.get("chunk_id")) for item in citations) < sum(bool(item.get("chunk_id")) for item in raw_citations)
         response.append({
             "id": str(message.id),
             "role": message.role,
-            "content": normalize_answer_markdown(message.content),
+            # Cached conversation text can contain verbatim source passages.
+            # Do not preserve it after any cited source is no longer allowed.
+            "content": "This historical answer is no longer available because your access to one or more source documents changed." if message.role == "assistant" and inaccessible_source else normalize_answer_markdown(message.content),
             "citations": citations,
             "usage_log_id": str(message.usage_log_id) if message.usage_log_id else None,
             "created_at": message.created_at,
@@ -138,7 +166,7 @@ async def rename_conversation(conversation_id: uuid.UUID, req: ConversationRenam
 
 @router.post("/ask")
 async def ask_question(req: AskRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> Any:
-    allowed, retry_after = ai_rate_limiter.allow(str(current_user.id))
+    allowed, retry_after = await ai_rate_limiter.allow(str(current_user.id))
     if not allowed:
         raise HTTPException(status_code=429, detail="AI request limit exceeded. Please try again shortly.", headers={"Retry-After": str(retry_after)})
     repo = AIRepository(db)
@@ -167,7 +195,19 @@ async def ask_question(req: AskRequest, current_user: User = Depends(get_current
 @router.post("/ask/stream")
 async def ask_question_stream(req: AskRequest, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> StreamingResponse:
     """Stream a grounded answer and its citations using the DocNexus SSE contract."""
-    allowed, retry_after = ai_rate_limiter.allow(str(current_user.id))
+    # The SSE generator starts only after FastAPI has returned the response,
+    # at which point request-scoped dependencies (including ``db``) may have
+    # been closed.  Keep only scalar authorization context here; never close
+    # over the request-bound SQLAlchemy ``User`` instance in ``event_stream``.
+    user_id = current_user.id
+    company_domain = current_user.company_domain
+    is_global_admin = AuthorizationService.is_global_administrator(current_user)
+    has_global_article_access = AuthorizationService.has_global_article_access(current_user)
+    has_global_identity_access = AuthorizationService.has_global_identity_management(current_user)
+    has_global_connector_access = AuthorizationService.has_global_connector_management(current_user)
+    has_global_governance_access = AuthorizationService.has_global_governance_access(current_user)
+
+    allowed, retry_after = await ai_rate_limiter.allow(str(user_id))
     if not allowed:
         raise HTTPException(status_code=429, detail="AI request limit exceeded. Please try again shortly.", headers={"Retry-After": str(retry_after)})
 
@@ -183,58 +223,79 @@ async def ask_question_stream(req: AskRequest, current_user: User = Depends(get_
 
     await repo.add_message(conversation.id, "user", req.question)
     conversation_id = str(conversation.id)
+
     async def event_stream():
         queue: asyncio.Queue[dict[str, str]] = asyncio.Queue()
 
-        async def on_token(content: str) -> None:
-            await queue.put({"type": "token", "content": content})
-
-        async def on_replace(content: str) -> None:
-            await queue.put({"type": "replace", "content": content})
-
-        task = asyncio.create_task(
-            get_ai_service(db).ask(
-                current_user,
-                req.question,
-                conversation_id=conversation.id,
-                on_token=on_token,
-                on_replace=on_replace,
+        # Streaming responses outlive the endpoint dependency context. Use a
+        # dedicated session and reload the user so authorization and database
+        # work never touch detached ORM instances.
+        async with SessionLocal() as stream_db:
+            await set_database_context(
+                stream_db,
+                company_domain,
+                is_global_admin,
+                str(user_id),
+                has_global_article_access,
+                has_global_identity_access,
+                has_global_connector_access,
+                has_global_governance_access,
             )
-        )
-        streamed_content = False
-        while not task.done() or not queue.empty():
-            if queue.empty():
-                await asyncio.sleep(0.01)
-                continue
-            event = await queue.get()
-            if event.get("type") in {"token", "replace"}:
-                streamed_content = True
-            yield f"data: {json.dumps(event)}\n\n"
+            stream_user = await UserRepository(stream_db).get_by_id(user_id)
+            if stream_user is None:
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'User account is no longer available.'})}\n\n"
+                return
+            stream_repo = AIRepository(stream_db)
 
-        try:
-            data = await task
-        except HTTPException as exc:
-            logger.error("AI stream task failed", status_code=exc.status_code, detail=str(exc.detail))
-            yield f"data: {json.dumps({'type': 'error', 'detail': str(exc.detail)})}\n\n"
-            return
-        except Exception as exc:
-            logger.exception("AI stream task failed unexpectedly", error=str(exc))
-            yield f"data: {json.dumps({'type': 'error', 'detail': 'AI generation failed. Please try again.'})}\n\n"
-            return
-        if not streamed_content:
-            answer = data.get("answer", "")
-            for start in range(0, len(answer), 48):
-                yield f"data: {json.dumps({'type': 'token', 'content': answer[start:start + 48]})}\n\n"
-                await asyncio.sleep(0)
-        await repo.add_message(
-            conversation.id,
-            "assistant",
-            data["answer"],
-            data.get("citations"),
-            uuid.UUID(data["log_id"]) if data.get("log_id") else None,
-        )
-        yield f"data: {json.dumps({'type': 'sources', 'sources': data.get('citations', [])})}\n\n"
-        yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id, 'log_id': data.get('log_id'), 'prompt_version': data.get('prompt_version'), 'retrieval_version': data.get('retrieval_version')})}\n\n"
+            async def on_token(content: str) -> None:
+                await queue.put({"type": "token", "content": content})
+
+            async def on_replace(content: str) -> None:
+                await queue.put({"type": "replace", "content": content})
+
+            task = asyncio.create_task(
+                get_ai_service(stream_db).ask(
+                    stream_user,
+                    req.question,
+                    conversation_id=uuid.UUID(conversation_id),
+                    on_token=on_token,
+                    on_replace=on_replace,
+                )
+            )
+            streamed_content = False
+            while not task.done() or not queue.empty():
+                if queue.empty():
+                    await asyncio.sleep(0.01)
+                    continue
+                event = await queue.get()
+                if event.get("type") in {"token", "replace"}:
+                    streamed_content = True
+                yield f"data: {json.dumps(event)}\n\n"
+
+            try:
+                data = await task
+            except HTTPException as exc:
+                logger.error("AI stream task failed", status_code=exc.status_code, detail=str(exc.detail))
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(exc.detail)})}\n\n"
+                return
+            except Exception as exc:
+                logger.exception("AI stream task failed unexpectedly", error=str(exc))
+                yield f"data: {json.dumps({'type': 'error', 'detail': 'AI generation failed. Please try again.'})}\n\n"
+                return
+            if not streamed_content:
+                answer = data.get("answer", "")
+                for start in range(0, len(answer), 48):
+                    yield f"data: {json.dumps({'type': 'token', 'content': answer[start:start + 48]})}\n\n"
+                    await asyncio.sleep(0)
+            await stream_repo.add_message(
+                uuid.UUID(conversation_id),
+                "assistant",
+                data["answer"],
+                data.get("citations"),
+                uuid.UUID(data["log_id"]) if data.get("log_id") else None,
+            )
+            yield f"data: {json.dumps({'type': 'sources', 'sources': data.get('citations', [])})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': conversation_id, 'log_id': data.get('log_id'), 'prompt_version': data.get('prompt_version'), 'retrieval_version': data.get('retrieval_version')})}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 

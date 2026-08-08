@@ -13,5 +13,19 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
-    imports=["src.workers.tasks"]
+    imports=["src.workers.tasks"],
+    beat_schedule={
+        "replay-domain-outbox": {
+            "task": "replay_outbox_task",
+            "schedule": 30.0,
+        },
+        "poll-cloud-connectors": {
+            "task": "schedule_cloud_connector_syncs",
+            "schedule": 600.0,
+        },
+        "prune-operational-metrics": {
+            "task": "prune_operational_metrics",
+            "schedule": 86400.0,
+        },
+    },
 )

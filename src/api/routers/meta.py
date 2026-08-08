@@ -1,11 +1,12 @@
 from typing import Any
 import uuid
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import get_db, get_current_user
 from src.models import User
 from src.domain.meta import MetaService
+from src.domain.rbac import AuthorizationService
 
 router = APIRouter()
 
@@ -14,8 +15,7 @@ class GroupResponse(BaseModel):
     name: str
     bitmask_position: int
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 @router.get("/tags")
 async def get_tags(
@@ -23,7 +23,7 @@ async def get_tags(
     db: AsyncSession = Depends(get_db)
 ) -> Any:
     service = MetaService(db)
-    return await service.get_all_tags()
+    return await service.get_all_tags(current_user)
 
 @router.get("/glossary")
 async def get_glossary(
@@ -33,14 +33,6 @@ async def get_glossary(
     service = MetaService(db)
     return await service.get_glossary()
 
-@router.get("/taxonomy")
-async def get_taxonomy(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-) -> Any:
-    service = MetaService(db)
-    return await service.get_taxonomy()
-
 @router.get("/groups", response_model=list[GroupResponse])
 async def get_groups(
     current_user: User = Depends(get_current_user),
@@ -48,5 +40,4 @@ async def get_groups(
 ):
     from src.repositories.user import UserRepository
     user_repo = UserRepository(db)
-    return await user_repo.get_all_groups()
-
+    return await user_repo.get_all_groups(None if AuthorizationService.can_view_all_access_groups(current_user) else current_user.company_domain)

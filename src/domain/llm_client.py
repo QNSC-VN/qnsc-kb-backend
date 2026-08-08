@@ -1,8 +1,7 @@
 """Small provider adapter for the text-generation paths in the application.
 
-Gemini's native API is used for Gemma models.  The legacy OpenAI-compatible
-providers remain available as a fallback while deployments migrate their
-environment variables.
+The active provider is selected by the administrator's persisted workspace
+configuration. OpenAI, GLM, and Groq all use their OpenAI-compatible chat API.
 """
 from __future__ import annotations
 
@@ -14,6 +13,7 @@ import httpx
 
 from src.core.config import settings
 from src.core.retry import with_exponential_retry
+from src.domain.llm_config import get_runtime_config
 
 
 @dataclass(frozen=True)
@@ -26,26 +26,10 @@ class Provider:
 
 
 def resolve_provider(model_override: str | None = None) -> Provider | None:
-    """Return the configured provider, preferring Gemini/Gemma."""
-    if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY != "mock":
-        return Provider(
-            name="gemini",
-            model=model_override or settings.GEMINI_MODEL,
-            url=settings.GEMINI_API_BASE_URL.rstrip("/"),
-            api_key=settings.GEMINI_API_KEY,
-            native_gemini=True,
-        )
-
-    if settings.GROQ_API_KEY and settings.GROQ_API_KEY != "mock":
-        model = model_override or settings.LLM_MODEL
-        if model == "gpt-4o":
-            model = "llama-3.3-70b-versatile"
-        return Provider("groq", model, "https://api.groq.com/openai/v1/chat/completions", settings.GROQ_API_KEY)
-
-    if settings.OPENAI_API_KEY and settings.OPENAI_API_KEY != "mock":
-        return Provider("openai", model_override or settings.LLM_MODEL, "https://api.openai.com/v1/chat/completions", settings.OPENAI_API_KEY)
-
-    return None
+    config = get_runtime_config()
+    if config is None:
+        return None
+    return Provider(config.provider, model_override or config.model, config.base_url, config.api_key)
 
 
 def _gemini_contents(messages: list[dict[str, str]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:

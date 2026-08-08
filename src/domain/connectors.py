@@ -33,17 +33,25 @@ async def sync_local_folder(db: AsyncSession, connector: Connector) -> Connector
     db.add(job)
     await db.commit()
     try:
-        existing_hashes = set((await db.execute(select(PendingDraft.source_hash))).scalars().all())
+        existing_hashes = set((await db.execute(
+            select(PendingDraft.source_hash).where(PendingDraft.company_domain == connector.company_domain)
+        )).scalars().all())
         imported = 0
+        scanned = 0
         for path in sorted(folder.rglob("*")):
             if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
+            scanned += 1
+            if scanned > settings.MAX_CONNECTOR_FILES:
+                raise HTTPException(status_code=413, detail="Connector folder contains too many supported files")
+            if path.stat().st_size > settings.MAX_SOURCE_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail=f"Connector file exceeds the {settings.MAX_SOURCE_UPLOAD_BYTES // (1024 * 1024)} MB limit: {path.name}")
             data = await asyncio.to_thread(path.read_bytes)
             source_hash = hashlib.sha256(data).hexdigest()
             if source_hash in existing_hashes:
                 continue
             pages = await asyncio.to_thread(extract_source_pages, path.name, data)
-            storage_key = await asyncio.to_thread(save_source, source_hash, path.name, data)
+            storage_key = await asyncio.to_thread(save_source, source_hash, path.name, data, connector.company_domain)
             text = await asyncio.to_thread(extract_source_markdown, path.name, data, pages)
             owner = (await db.execute(select(User).where(User.id == connector.created_by))).scalar_one_or_none()
             matches = await find_similar_documents(db, owner or User(role="Admin", company_domain=connector.company_domain), text)
@@ -52,6 +60,7 @@ async def sync_local_folder(db: AsyncSession, connector: Connector) -> Connector
                 continue
             db.add(PendingDraft(
                 title=path.stem[:255], source_ref=f"local://{path.as_posix()}", source_hash=source_hash,
+                company_domain=connector.company_domain,
                 summary=text, storage_key=storage_key, original_filename=path.name,
                 mime_type="application/octet-stream", page_texts=pages, status="pending",
                 similarity_level=similarity_level, similarity_matches=matches,

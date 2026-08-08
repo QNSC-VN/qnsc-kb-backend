@@ -88,10 +88,11 @@ class AIRepository:
         return conversation
 
     # AI Cache
-    async def get_cached(self, question_hash: str, user_bitmask: int) -> AiCache | None:
-        # Match cache key/hash and ensure cache is not expired
-        # The cache's access_group_bitmap must match the user's bitmask compatibility
-        # If the user has permission to see what was cached (i.e. (access_group_bitmap & user_bitmask) != 0)
+    async def get_cached(self, question_hash: str, authorization_fingerprint: str, owner_user_id: uuid.UUID) -> AiCache | None:
+        # Cached answer text is served only to the exact authorization context
+        # that produced it.  Do not use bitmap overlap here: all users share
+        # the public bit and overlap is not proof that restricted citations
+        # remain authorized.
         now = datetime.utcnow()
         result = await self.db.execute(
             select(AiCache)
@@ -99,7 +100,8 @@ class AIRepository:
                 and_(
                     AiCache.question_hash == question_hash,
                     AiCache.expires_at > now,
-                    AiCache.access_group_bitmap.op("&")(user_bitmask) != 0
+                    AiCache.authorization_fingerprint == authorization_fingerprint,
+                    AiCache.owner_user_id == owner_user_id,
                 )
             )
         )
@@ -114,18 +116,24 @@ class AIRepository:
         statement = pg_insert(AiCache).values(
             id=cache_id,
             cache_key=cache.cache_key,
+            owner_user_id=cache.owner_user_id,
             question_hash=cache.question_hash,
+            authorization_fingerprint=cache.authorization_fingerprint,
             access_group_bitmap=cache.access_group_bitmap,
             answer=cache.answer,
             citations=cache.citations,
+            article_ids=cache.article_ids,
             expires_at=cache.expires_at,
         ).on_conflict_do_update(
             index_elements=[AiCache.cache_key],
             set_={
                 "question_hash": cache.question_hash,
+                "owner_user_id": cache.owner_user_id,
+                "authorization_fingerprint": cache.authorization_fingerprint,
                 "access_group_bitmap": cache.access_group_bitmap,
                 "answer": cache.answer,
                 "citations": cache.citations,
+                "article_ids": cache.article_ids,
                 "expires_at": cache.expires_at,
             },
         ).returning(AiCache.id)

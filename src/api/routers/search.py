@@ -13,12 +13,12 @@ router = APIRouter()
 
 @router.get("")
 async def search(
-    q: str = Query("", description="Search query string"),
-    dept: str | None = Query(None),
-    sensitivity: str | None = Query(None),
-    type_: str | None = Query(None, alias="type"),
-    status: str | None = Query(None),
-    language: str | None = Query(None),
+    q: str = Query("", max_length=4_000, description="Search query string"),
+    dept: str | None = Query(None, max_length=100),
+    sensitivity: str | None = Query(None, max_length=30),
+    type_: str | None = Query(None, alias="type", max_length=50),
+    status: str | None = Query(None, max_length=30),
+    language: str | None = Query(None, max_length=20),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     limit: int = Query(5, ge=1, le=20),

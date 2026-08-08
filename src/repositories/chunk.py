@@ -2,11 +2,12 @@ import uuid
 import re
 import structlog
 from typing import Sequence
-from sqlalchemy import select, delete, update, and_, or_, text, func
+from sqlalchemy import select, delete, update, and_, or_, text, func, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.models.chunk import ParentChunk, ArticleChunk, ChunkMetadata
 from src.models.article import Article
+from src.models.user import Department
 from src.core.config import settings
 
 logger = structlog.get_logger()
@@ -48,6 +49,39 @@ class ChunkRepository:
         )
         return result.scalar_one_or_none()
 
+    async def authorized_chunk_ids(self, user: object, chunk_ids: list[uuid.UUID]) -> set[str]:
+        """Return only citation chunks still visible to the current user."""
+        if not chunk_ids:
+            return set()
+        from src.domain.permissions import PermissionService
+        from src.domain.rbac import AuthorizationService
+
+        conditions = [
+            ArticleChunk.id.in_(chunk_ids),
+            Article.status == "published",
+            Article.lifecycle_status == "active",
+            exists(select(Department.id).where(
+                Department.company_domain == Article.company_domain,
+                Department.name == Article.dept,
+                Department.active.is_(True),
+            )),
+        ]
+        if not AuthorizationService.has_full_company_article_access(user) and not AuthorizationService.has_narrow_article_access(user):
+            conditions.append(ArticleChunk.access_group_bitmap.op("&")(PermissionService.calculate_user_bitmask(user)) != 0)
+        if not AuthorizationService.has_permission(user, "article.read", requested_scope="global"):
+            conditions.append(Article.company_domain == user.company_domain)
+        result = await self.db.execute(
+            select(ArticleChunk)
+            .join(Article, Article.id == ArticleChunk.article_id)
+            .options(selectinload(ArticleChunk.article))
+            .where(*conditions)
+        )
+        return {
+            str(chunk.id)
+            for chunk in result.scalars().all()
+            if PermissionService.can_view_article(user, chunk.article)
+        }
+
     async def update_permissions(self, article_id: uuid.UUID, bitmap: int, sensitivity: str, visibility: str, dept: str) -> None:
         await self.db.execute(
             update(ArticleChunk)
@@ -81,17 +115,41 @@ class ChunkRepository:
         # Base filter: permissions bitwise AND
         # We also enforce that the article must be published (not draft or soft deleted)
         where_clauses = [
-            ArticleChunk.access_group_bitmap.op("&")(user_bitmask) != 0,
             # Join with articles to check status is published
             Article.status == "published"
             ,Article.lifecycle_status == "active"
         ]
+        if not filters.get("bypass_access_groups"):
+            where_clauses.insert(0, ArticleChunk.access_group_bitmap.op("&")(user_bitmask) != 0)
 
         if filters.get("company_domain"):
             where_clauses.append(Article.company_domain == filters["company_domain"])
 
+        # Keep retrieval aligned with article browsing. Department-scoped
+        # readers may search public content plus their explicitly owned
+        # departments; own-scoped readers may search public content plus
+        # their own articles. The final PermissionService check below remains
+        # authoritative for group ACLs.
+        scope_conditions = [Article.sensitivity == "public"]
+        if filters.get("departments") is not None:
+            department_names = list(filters["departments"])
+            scope_conditions.append(or_(Article.dept.in_(department_names), Article.departments.any(Department.name.in_(department_names))))
+        if filters.get("owner_id") is not None:
+            scope_conditions.append(Article.owner_id == filters["owner_id"])
+        if len(scope_conditions) > 1:
+            where_clauses.append(or_(*scope_conditions))
+        elif filters.get("departments") is not None or filters.get("owner_id") is not None:
+            where_clauses.append(scope_conditions[0])
+
+        # A deactivated department is no longer a valid content scope.
+        where_clauses.append(exists(select(Department.id).where(
+            Department.company_domain == Article.company_domain,
+            Department.name == Article.dept,
+            Department.active.is_(True),
+        )))
+
         if filters.get("dept"):
-            where_clauses.append(ArticleChunk.department_id == filters["dept"])
+            where_clauses.append(or_(ArticleChunk.department_id == filters["dept"], Article.departments.any(Department.name == filters["dept"])))
         if filters.get("sensitivity"):
             where_clauses.append(ArticleChunk.sensitivity == filters["sensitivity"])
         if filters.get("type"):

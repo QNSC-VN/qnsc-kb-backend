@@ -13,6 +13,10 @@ import json
 import sys
 from pathlib import Path
 
+# Make the script runnable directly from the repository root as well as via
+# an installed package.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from src.rag.evaluator import answer_correctness, context_recall, lexical_faithfulness
 
 
