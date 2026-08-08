@@ -1,0 +1,525 @@
+// qnsc-kb · the whole stack, for every environment.
+//
+// live/develop and live/prod hold VALUES ONLY and both instantiate this module, so the
+// two environments cannot drift structurally — only in what they feed in. Adding a
+// resource means editing this file once.
+//
+// Consumes, never creates: the VPC/subnets/SGs come from the platform runtime stack,
+// the CMK and ECR repos from this product's own _shared stack, the R2 bucket from the
+// platform storage stack. Relocating an existing address needs a `moved {}` block in
+// live/*/moved.tf, or Terraform destroys and recreates it.
+
+data "aws_caller_identity" "current" {}
+
+// ── Product shared layer (ECR URLs, KMS, re-exported platform outputs) ───────
+data "terraform_remote_state" "shared" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = var.shared_state_key
+    region = "ap-southeast-1"
+  }
+}
+
+// ── Platform runtime layer (shared VPC + NAT + SGs) ──────────────────────────
+// One VPC per environment, shared by every product. NAT egress matters more here than
+// for most products: the worker reaches Gemini, Microsoft Graph and Google APIs, and
+// the api reaches Gemini on every question.
+data "terraform_remote_state" "runtime" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = var.runtime_state_key
+    region = "ap-southeast-1"
+  }
+}
+
+// ── Platform storage layer (Cloudflare R2) ───────────────────────────────────
+data "terraform_remote_state" "storage" {
+  backend = "s3"
+  config = {
+    bucket = "qnsc-tofu-state"
+    key    = var.storage_state_key
+    region = "ap-southeast-1"
+  }
+}
+
+locals {
+  name         = "${var.product}-${var.env_slug}"
+  app_base_url = "https://${var.app_domain}"
+  api_base_url = "https://${var.api_domain}"
+
+  kms_key_arn        = data.terraform_remote_state.shared.outputs.kms_key_arn
+  cloudflare_zone_id = try(data.terraform_remote_state.shared.outputs.cloudflare_zone_id, "")
+
+  ecr_base         = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.region}.amazonaws.com"
+  ecr_api_url      = "${local.ecr_base}/${var.product}-api:${var.image_tag}"
+  ecr_worker_url   = "${local.ecr_base}/${var.product}-worker:${var.image_tag}"
+  ecr_migrator_url = "${local.ecr_base}/${var.product}-migrator:${var.image_tag}"
+
+  // Computed, not read from module.worker.log_group_name, to break a dependency cycle:
+  // the beat and clamav sidecars need a log group, the worker service needs their
+  // container definitions, and the worker service is what creates the log group.
+  // `ecs-service` names it deterministically as /ecs/<cluster>-<service>.
+  api_log_group    = "/ecs/${local.name}-api"
+  worker_log_group = "/ecs/${local.name}-worker"
+
+  // `rediss://`, never `redis://`: the cache module enables transit encryption
+  // unconditionally. src/workers/celery_app.py keys its TLS settings off this exact
+  // scheme, because Celery rejects a rediss:// URL that does not state ssl_cert_reqs.
+  //
+  // With the cache disabled this is a deliberately UNRESOLVABLE RFC 2606 name rather
+  // than an empty string: REDIS_URL has a localhost default in config.py, so omitting
+  // it would leave a deployed task silently pointing Celery at itself.
+  redis_url = var.cache.enabled ? "rediss://${module.cache[0].endpoint}:${module.cache[0].port}" : "rediss://cache-disabled.invalid:6379"
+
+  // Every app secret this stack owns. Terraform creates the CONTAINER; values are
+  // pasted in out of band and never enter state. The deploy preflight in qnsc-ci
+  // refuses to deploy while any injected secret is still empty.
+  secret_names = concat([
+    "secret-key",          // JWT signing
+    "data-encryption-key", // at-rest encryption of stored connector credentials
+    "app-db-password",     // password for var.app_db_role
+    "gemini-api-key",      // LLM + restructuring
+    "r2-access-key-id",    // bucket-scoped R2 credential pair
+    "r2-secret-access-key",
+    ], var.microsoft_client_id != "" ? ["microsoft-client-secret"] : [],
+    var.google_client_id != "" ? ["google-client-secret"] : [],
+    // Only when a tunnel is actually in use. A secret that is never populated AND
+    // never injected still bills, and shows up in every "which secrets are empty?"
+    // audit as a permanent false positive — which is how a real one gets missed.
+    var.tunnel_enabled ? ["tunnel-token"] : [],
+  )
+
+  // IAM resource list for the secret containers this stack owns.
+  //
+  // `secret_iam_arns`, NOT `secret_arns`: with use_bundle on, `secret_arns` returns
+  // "<arn>:<key>::" — an ECS valueFrom reference, not an ARN — and an IAM statement
+  // built from those matches nothing while still applying cleanly. The failure surfaces
+  // at the next task start as "unable to pull secrets", long after apply reported
+  // success.
+  secret_iam_arns = module.secrets.secret_iam_arns
+
+  // Non-secret connection parts. USER/PASSWORD arrive as injected secrets and the
+  // application composes the URL (see Settings.model_post_init) — a full DATABASE_URL
+  // cannot be assembled here without putting the password in plain task-definition env.
+  db_env = [
+    { name = "DATABASE_HOST", value = module.rds.address },
+    { name = "DATABASE_PORT", value = tostring(module.rds.port) },
+    { name = "DATABASE_NAME", value = module.rds.db_name },
+    { name = "DATABASE_USER", value = var.app_db_role },
+    { name = "APP_DATABASE_ROLE", value = var.app_db_role },
+  ]
+
+  // Configuration both the api and the worker must agree on. They run the same code
+  // over the same database; a value set on one and not the other is a split brain —
+  // most sharply EMBEDDING_MODEL, where a mismatch writes vectors the other half
+  // cannot compare against.
+  common_env = concat(local.db_env, [
+    // production mode is deliberate in DEVELOP too. validate_production() is the only
+    // thing enforcing AUTO_CREATE_SCHEMA=false, ENABLE_API_DOCS=false,
+    // ALLOW_SELF_REGISTRATION=false, HTTPS-only origins and present R2 credentials, and
+    // an environment that does not run those checks cannot prove production will pass
+    // them.
+    { name = "ENVIRONMENT", value = "production" },
+    { name = "AWS_REGION", value = var.region },
+    { name = "REDIS_URL", value = local.redis_url },
+
+    // Celery, not in-process: JOB_MODE=inline would run ingestion inside the request
+    // that uploaded the document.
+    { name = "JOB_MODE", value = "celery" },
+
+    // Schema comes from Alembic in the migrator task. AUTO_CREATE_SCHEMA would have
+    // every booting task issue DDL of its own.
+    { name = "AUTO_CREATE_SCHEMA", value = "false" },
+    { name = "ENABLE_RLS", value = "true" },
+
+    { name = "SOURCE_STORAGE_BACKEND", value = "r2" },
+    { name = "SOURCE_STORAGE_BUCKET", value = data.terraform_remote_state.storage.outputs["${replace(var.product, "-", "_")}_sources_name"] },
+    { name = "S3_ENDPOINT_URL", value = data.terraform_remote_state.storage.outputs["${replace(var.product, "-", "_")}_sources_endpoint"] },
+    { name = "SOURCE_STORAGE_PREFIX", value = "qnsc-sources" },
+
+    { name = "EMBEDDING_MODEL", value = var.embedding_model },
+    { name = "EMBEDDING_VERSION", value = var.embedding_version },
+    { name = "GEMINI_MODEL", value = var.gemini_model },
+
+    // localhost is correct under awsvpc: every container in a task shares one network
+    // namespace, so the API and worker reach the ClamAV sidecar without exposing it.
+    { name = "MALWARE_SCAN_ENABLED", value = tostring(var.malware_scan_enabled) },
+    { name = "MALWARE_SCANNER_HOST", value = var.malware_scan_enabled ? "localhost" : "" },
+    { name = "MALWARE_SCANNER_PORT", value = "3310" },
+
+    { name = "FRONTEND_URL", value = local.app_base_url },
+    { name = "CORS_ORIGINS", value = local.app_base_url },
+    { name = "CONNECTOR_WEBHOOK_BASE_URL", value = "${local.api_base_url}/api/v1/connectors" },
+
+    { name = "MICROSOFT_CLIENT_ID", value = var.microsoft_client_id },
+    { name = "MICROSOFT_TENANT_ID", value = var.microsoft_tenant_id },
+    { name = "MICROSOFT_REDIRECT_URI", value = var.microsoft_client_id != "" ? "${local.api_base_url}/api/v1/connectors/oauth/callback" : "" },
+    { name = "GOOGLE_CLIENT_ID", value = var.google_client_id },
+    { name = "GOOGLE_REDIRECT_URI", value = var.google_client_id != "" ? "${local.api_base_url}/api/v1/connectors/oauth/callback" : "" },
+    { name = "ALLOWED_EMAIL_DOMAINS", value = join(",", var.allowed_email_domains) },
+  ])
+
+  // Injected secrets shared by api and worker. Both encrypt and decrypt stored
+  // connector credentials, so DATA_ENCRYPTION_KEY cannot be api-only.
+  common_secrets = concat([
+    { name = "SECRET_KEY", secret_arn = module.secrets.secret_arns["secret-key"] },
+    { name = "DATA_ENCRYPTION_KEY", secret_arn = module.secrets.secret_arns["data-encryption-key"] },
+    { name = "DATABASE_PASSWORD", secret_arn = module.secrets.secret_arns["app-db-password"] },
+    { name = "GEMINI_API_KEY", secret_arn = module.secrets.secret_arns["gemini-api-key"] },
+    { name = "R2_ACCESS_KEY_ID", secret_arn = module.secrets.secret_arns["r2-access-key-id"] },
+    { name = "R2_SECRET_ACCESS_KEY", secret_arn = module.secrets.secret_arns["r2-secret-access-key"] },
+    ], var.microsoft_client_id != "" ? [
+    { name = "MICROSOFT_CLIENT_SECRET", secret_arn = module.secrets.secret_arns["microsoft-client-secret"] },
+    ] : [], var.google_client_id != "" ? [
+    { name = "GOOGLE_CLIENT_SECRET", secret_arn = module.secrets.secret_arns["google-client-secret"] },
+  ] : [])
+
+  tags = { Environment = var.env }
+}
+
+// ── Secrets ───────────────────────────────────────────────────────────────────
+// One JSON container read per key, rather than one container per secret: Secrets
+// Manager bills per SECRET regardless of size.
+//
+// Secrets Manager and not SSM Parameter Store, following the reasoning recorded in
+// rally's stack: a Secrets Manager secret can exist while holding NO value, and that
+// empty state is what makes "unpopulated" unambiguous. Parameter Store rejects an
+// empty value, so the same guarantee needs a placeholder plus a version check plus a
+// runtime guard — three mechanisms replacing one property. Revisit past ~30 secrets,
+// where the per-secret fee starts to outweigh it. This stack has 9.
+module "secrets" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/secrets?ref=secrets-v2.1.0"
+
+  prefix               = "${var.product}/${var.env}"
+  kms_key_arn          = local.kms_key_arn
+  recovery_window_days = var.secrets_recovery_window_days
+
+  bundle_name  = var.secrets_bundle_name
+  use_bundle   = var.secrets_use_bundle
+  secret_names = local.secret_names
+
+  tags = local.tags
+}
+
+// ── RDS PostgreSQL (pgvector) ─────────────────────────────────────────────────
+// The extensions themselves (vector, pgcrypto) are created by migrations 20260802_00
+// and 20260806_13, which is why the migrator connects as the MASTER user — creating an
+// extension is not something the least-privilege application role may do.
+module "rds" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/rds?ref=rds-v2.0.0"
+
+  identifier        = local.name
+  subnet_ids        = data.terraform_remote_state.runtime.outputs.data_subnet_ids
+  security_group_id = data.terraform_remote_state.runtime.outputs.sg_rds_id
+  kms_key_arn       = local.kms_key_arn
+
+  engine_version           = var.rds.engine_version
+  instance_class           = var.rds.instance_class
+  allocated_storage_gb     = var.rds.allocated_storage_gb
+  max_allocated_storage_gb = var.rds.max_allocated_storage_gb
+  multi_az                 = var.rds.multi_az
+  deletion_protection      = var.rds.deletion_protection
+  backup_retention_days    = var.rds.backup_retention_days
+  monitoring_interval      = var.rds.monitoring_interval
+
+  tags = local.tags
+}
+
+// ── Cache (Valkey) — Celery broker and result backend ────────────────────────
+module "cache" {
+  count  = var.cache.enabled ? 1 : 0
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cache?ref=cache-v1.0.0"
+
+  name              = "${local.name}-cache"
+  subnet_ids        = data.terraform_remote_state.runtime.outputs.data_subnet_ids
+  security_group_id = data.terraform_remote_state.runtime.outputs.sg_cache_id
+  kms_key_arn       = local.kms_key_arn
+
+  mode      = var.cache.mode
+  node_type = var.cache.node_type
+
+  tags = local.tags
+}
+
+// ── ECS cluster ───────────────────────────────────────────────────────────────
+module "ecs_cluster" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecs-cluster?ref=ecs-cluster-v1.0.0"
+
+  name               = local.name
+  container_insights = var.container_insights
+  tags               = local.tags
+}
+
+// ── Cloudflare Tunnel sidecar (api only) ─────────────────────────────────────
+// Ingress without an ALB: cloudflared dials out, so the task needs no inbound listener
+// and no public IPv4. The worker has no HTTP surface and gets none.
+module "tunnel_api" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/tunnel-agent?ref=tunnel-agent-v1.0.0"
+
+  tunnel_token_secret_arn = var.tunnel_enabled ? module.secrets.secret_arns["tunnel-token"] : ""
+  app_port                = 8000
+  log_group               = local.api_log_group
+  region                  = var.region
+}
+
+// ── API service ───────────────────────────────────────────────────────────────
+module "api" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecs-service?ref=ecs-service-v2.1.1"
+
+  service_name = "api"
+  cluster_name = module.ecs_cluster.cluster_name
+  cluster_arn  = module.ecs_cluster.cluster_arn
+  region       = var.region
+  image_uri    = local.ecr_api_url
+
+  cpu    = var.api.cpu
+  memory = var.api.memory
+
+  vpc_id            = data.terraform_remote_state.runtime.outputs.vpc_id
+  subnet_ids        = data.terraform_remote_state.runtime.outputs.private_subnet_ids
+  security_group_id = data.terraform_remote_state.runtime.outputs.sg_app_id
+
+  desired_count      = 1
+  enable_autoscaling = var.api.enable_autoscaling
+  min_count          = var.api.min_count
+  max_count          = var.api.max_count
+  use_spot           = var.api.use_spot
+  cpu_target_pct     = var.api.cpu_target_pct
+  memory_target_pct  = var.api.memory_target_pct
+  log_retention_days = var.log_retention_days
+
+  container_port = 8000
+
+  attach_alb        = !var.tunnel_enabled
+  alb_listener_arn  = try(data.terraform_remote_state.runtime.outputs.https_listener_arn, "")
+  alb_priority      = 110
+  alb_path_patterns = ["/*"]
+  alb_host_headers  = [var.api_domain]
+
+  // LIVENESS, deliberately — /health/live answers 200 without touching a dependency.
+  // /health/ready checks Postgres and Redis, and a dependency-coupled probe here
+  // deregisters or restarts the task whenever either blips, converting a hiccup into an
+  // outage. Readiness is checked once after the roll, by the deploy pipeline.
+  health_check_path = "/health/live"
+
+  environment_vars = concat(local.common_env, [
+    // Publishing the full endpoint inventory and every schema, unauthenticated, on a
+    // public host. validate_production() also refuses to boot with this true.
+    { name = "ENABLE_API_DOCS", value = "false" },
+    // There is no self-service signup: users are created by an administrator. The
+    // first Admin is created out of band — see infra/README.
+    { name = "ALLOW_SELF_REGISTRATION", value = "false" },
+  ])
+
+  secrets = local.common_secrets
+
+  // Execution-role read list. Includes the AWS-managed RDS master secret because the
+  // migrator reuses this role and injects the master credential from it; omit it and
+  // that task cannot start at all ("unable to pull secrets") — a boot failure, not a
+  // runtime error.
+  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn])
+  kms_key_arn = local.kms_key_arn
+
+  additional_containers = module.tunnel_api.container_definitions
+
+  tags = local.tags
+}
+
+// ── Worker service — Celery worker + beat + ClamAV ───────────────────────────
+// Three containers, one task, on purpose:
+//   worker  the Celery consumer (embedding, OCR, connector sync)
+//   beat    the scheduler. A SINGLETON — two of these double every scheduled job —
+//           which is why var.worker caps max_count at 1.
+//   clamav  the malware scanner the worker and api talk to over localhost
+module "worker" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecs-service?ref=ecs-service-v2.1.1"
+
+  service_name = "worker"
+  cluster_name = module.ecs_cluster.cluster_name
+  cluster_arn  = module.ecs_cluster.cluster_arn
+  region       = var.region
+  image_uri    = local.ecr_worker_url
+
+  cpu    = var.worker.cpu
+  memory = var.worker.memory
+
+  vpc_id            = data.terraform_remote_state.runtime.outputs.vpc_id
+  subnet_ids        = data.terraform_remote_state.runtime.outputs.private_subnet_ids
+  security_group_id = data.terraform_remote_state.runtime.outputs.sg_app_id
+
+  desired_count      = 1
+  enable_autoscaling = var.worker.enable_autoscaling
+  min_count          = var.worker.min_count
+  max_count          = var.worker.max_count
+  use_spot           = var.worker.use_spot
+  log_retention_days = var.log_retention_days
+
+  attach_alb     = false
+  container_port = 8001
+
+  // No HTTP surface: ask Celery whether the consumer is actually serving. `pgrep
+  // celery` would pass for a process that is running but has lost its broker
+  // connection, which is the failure worth catching.
+  health_check_command = "celery -A src.workers.celery_app inspect ping -d celery@$HOSTNAME || exit 1"
+
+  environment_vars = local.common_env
+  secrets          = local.common_secrets
+
+  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn])
+  kms_key_arn = local.kms_key_arn
+
+  additional_containers = concat([
+    {
+      name      = "beat"
+      image     = local.ecr_worker_url
+      essential = true
+      command   = ["celery", "-A", "src.workers.celery_app", "beat", "--loglevel=info"]
+      // Carved out of the task total, not added to it. Beat only computes due times
+      // and enqueues — it neither embeds nor extracts.
+      cpu         = 128
+      memory      = 256
+      environment = local.common_env
+      secrets     = [for s in local.common_secrets : { name = s.name, valueFrom = s.secret_arn }]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = local.worker_log_group
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "beat"
+        }
+      }
+    },
+    ], var.malware_scan_enabled ? [
+    {
+      name      = "clamav"
+      image     = "clamav/clamav:1.4"
+      essential = true
+      // The signature database is ~2 GB resident. This is the largest single reason
+      // the worker task is sized as it is.
+      cpu    = 256
+      memory = 1024
+      // clamd loads the whole database before it answers anything, so the start period
+      // has to cover a cold load or the task is killed and restarted forever.
+      healthCheck = {
+        command     = ["CMD-SHELL", "clamdcheck.sh || exit 1"]
+        interval    = 60
+        timeout     = 10
+        retries     = 3
+        startPeriod = 300
+      }
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          "awslogs-group"         = local.worker_log_group
+          "awslogs-region"        = var.region
+          "awslogs-stream-prefix" = "clamav"
+        }
+      }
+    },
+  ] : [])
+
+  tags = local.tags
+}
+
+// ── Migrator — one-shot task run by the deploy pipeline before rolling services ──
+module "migrator" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/oneshot-task?ref=oneshot-task-v2.0.0"
+
+  name               = "${local.name}-migrator"
+  container_name     = "migrator"
+  image              = local.ecr_migrator_url
+  cpu                = 512
+  memory             = 1024
+  execution_role_arn = module.api.execution_role_arn
+  task_role_arn      = module.api.task_role_arn
+  region             = var.region
+  log_retention_days = var.log_retention_days
+
+  environment = {
+    ENVIRONMENT   = "production"
+    AWS_REGION    = var.region
+    DATABASE_HOST = module.rds.address
+    DATABASE_PORT = tostring(module.rds.port)
+    DATABASE_NAME = module.rds.db_name
+    // Read by migration 20260802_05 to decide whether to enable row-level security and
+    // whom to grant to, and by scripts/bootstrap_db_role.py to create that role.
+    ENABLE_RLS        = "true"
+    APP_DATABASE_ROLE = var.app_db_role
+  }
+
+  secrets = {
+    // The MASTER credential, and it stays master even though the api and worker do not
+    // use it: migrations create extensions and grant privileges, and the role bootstrap
+    // needs CREATEROLE. Narrowing this additionally requires transferring schema
+    // ownership, which is a separate and more disruptive step.
+    MIGRATION_DATABASE_USER     = "${module.rds.master_secret_arn}:username::"
+    MIGRATION_DATABASE_PASSWORD = "${module.rds.master_secret_arn}:password::"
+    // The password the app role is created WITH, so the role and the application's
+    // injected DATABASE_PASSWORD can never disagree — both read this one secret.
+    APP_DATABASE_PASSWORD = module.secrets.secret_arns["app-db-password"]
+  }
+
+  tags = local.tags
+}
+
+// ── SPA — Cloudflare Pages ────────────────────────────────────────────────────
+// Deployed from the SEPARATE qnsc-kb-frontend repo. This creates the project and its
+// custom domain; the project NAME is what that repo's deploy workflow needs, published
+// to it as the PAGES_PROJECT environment variable by infra-apply.
+//
+// No production_env_vars: unlike rally, this SPA is not a Pages-Functions BFF. It calls
+// the API directly with a bearer token, and VITE_API_BASE_URL is baked in at build
+// time by the frontend's own pipeline.
+module "web" {
+  count  = var.cloudflare_account_id != "" ? 1 : 0
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/pages-web?ref=pages-web-v1.0.1"
+
+  account_id  = var.cloudflare_account_id
+  name        = "${local.name}-web"
+  zone_id     = local.cloudflare_zone_id
+  domain      = local.cloudflare_zone_id != "" ? var.app_domain : ""
+  record_name = local.cloudflare_zone_id != "" ? var.web_record : ""
+  comment     = "${local.name} web SPA → Cloudflare Pages (managed by ${var.product} infra, ${var.env})"
+}
+
+// ── DNS — api_domain → the tunnel ────────────────────────────────────────────
+module "dns_api" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
+
+  enabled = local.cloudflare_zone_id != "" && var.tunnel_enabled
+  zone_id = local.cloudflare_zone_id
+  name    = var.api_record
+  type    = "CNAME"
+  // A Cloudflare-internal name that resolves only through the edge, so the record
+  // CANNOT be unproxied — orange cloud is the only way traffic reaches a connector.
+  content = "${var.tunnel_id}.cfargotunnel.com"
+  proxied = true
+  comment = "${local.name} api → Cloudflare Tunnel"
+}
+
+// ── Plan-time guards ─────────────────────────────────────────────────────────
+// Each of these encodes a failure that is invisible at apply time and only surfaces
+// once a task tries to start.
+
+check "tunnel_has_id" {
+  assert {
+    condition     = !var.tunnel_enabled || var.tunnel_id != ""
+    error_message = "tunnel_enabled is true but tunnel_id is empty — the DNS record would point at \".cfargotunnel.com\" and the API would be unreachable."
+  }
+}
+
+check "cache_required_for_jobs" {
+  assert {
+    condition     = var.cache.enabled || (var.api.min_count == 0 && var.worker.min_count == 0)
+    error_message = "The cache is the Celery broker: with it disabled no ingestion, connector sync or outbox relay runs at all. Scale both services to zero, or enable the cache."
+  }
+}
+
+check "malware_scan_matches_production_mode" {
+  assert {
+    condition     = var.malware_scan_enabled
+    error_message = "ENVIRONMENT is pinned to production in every environment, and validate_production() refuses to boot when MALWARE_SCAN_ENABLED is false. Disabling the scanner requires dropping out of production mode, which also unpins API docs and self-registration."
+  }
+}
