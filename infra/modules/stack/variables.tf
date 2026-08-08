@@ -341,3 +341,35 @@ variable "wake_schedule" {
     during its first minutes.
   EOT
 }
+
+// ── Alarms ───────────────────────────────────────────────────────────────────
+variable "alarm_emails" {
+  type    = list(string)
+  default = []
+
+  description = <<-EOT
+    Addresses subscribed to the alarm SNS topic. Empty creates the alarms without a
+    subscriber, which is not useless — the console still shows state — but nothing is
+    delivered.
+
+    Each subscription must be confirmed from the email itself; Terraform cannot do it.
+  EOT
+}
+
+variable "alarm_thresholds" {
+  type = object({
+    rds_cpu_pct     = optional(number, 80)
+    rds_free_bytes  = optional(number, 2147483648) // 2 GiB
+    rds_connections = optional(number, 80)
+  })
+  default = {}
+
+  description = <<-EOT
+    Overrides for the RDS alarm thresholds.
+
+    rds_free_bytes matters more here than in a typical product: this database stores
+    embeddings and an HNSW index, storage AUTOSCALES up to max_allocated_storage_gb, and
+    RDS refuses to shrink a volume afterwards. Growth is therefore permanent, and the
+    alarm is the only thing that makes it visible before it is paid for.
+  EOT
+}

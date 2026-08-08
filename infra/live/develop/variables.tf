@@ -66,3 +66,14 @@ variable "allowed_email_domains" {
   default     = []
   description = "Restricts which email domains may be registered. Empty accepts any."
 }
+
+variable "alarm_emails" {
+  type    = list(string)
+  default = []
+
+  description = <<-EOT
+    Addresses subscribed to the alarm SNS topic. Each subscription must be confirmed
+    from the email itself — Terraform creates it as `pending confirmation` and cannot
+    complete it, so an unconfirmed address is silently no alerting at all.
+  EOT
+}

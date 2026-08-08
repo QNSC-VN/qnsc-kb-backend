@@ -767,3 +767,53 @@ resource "aws_scheduler_schedule" "ecs_scale_up" {
     }
   }
 }
+
+// ── Alarms ────────────────────────────────────────────────────────────────────
+// CloudWatch alarms plus an SNS topic. Deliberately small: at $0.10 per alarm the cost
+// is negligible, but an alarm nobody can act on is worse than none.
+//
+// `environment_idle` is DERIVED from the service floors rather than being its own
+// switch, so it cannot disagree with reality. It suppresses every alarm whose premise is
+// "this environment is serving traffic" — ECS CPU and memory, ALB 5xx, unhealthy hosts —
+// because a service scaled to zero makes its CPU metric disappear, and the alarm then
+// walks OK -> INSUFFICIENT_DATA -> OK on every wake. Raising the floors re-arms them
+// automatically.
+//
+// The RDS alarms are NOT suppressed and need no special case: a stopped instance
+// publishes nothing, which reads as INSUFFICIENT_DATA rather than ALARM, so the nightly
+// stop does not page anyone.
+//
+// No ALB is passed. Ingress is a Cloudflare Tunnel, so there is no load balancer to
+// measure and Cloudflare — not CloudWatch — sees the 5xx. Closing that gap needs an
+// external health check, which belongs at go-live rather than against an environment
+// deliberately running zero tasks.
+module "observability" {
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/observability?ref=observability-v4.1.0"
+
+  name             = local.name
+  region           = var.region
+  alarm_emails     = var.alarm_emails
+  ecs_cluster_name = module.ecs_cluster.cluster_name
+
+  ecs_service_names = [
+    module.api.service_name,
+    module.worker.service_name,
+  ]
+
+  rds_instance_id = module.rds.identifier
+
+  environment_idle = var.api.min_count == 0 && var.worker.min_count == 0
+
+  thresholds = var.alarm_thresholds
+
+  // Three dashboards are free per ACCOUNT and several environments already exist across
+  // products, so a fourth is billable. The alarms carry the signal; a dashboard is for
+  // looking at, and nobody is looking at an idle environment.
+  create_dashboard = false
+
+  // Treats "no registered targets" as breaching, which is right for an always-on
+  // environment and wrong for one that is Spot-backed and scheduled to zero.
+  monitor_target_health = false
+
+  tags = local.tags
+}

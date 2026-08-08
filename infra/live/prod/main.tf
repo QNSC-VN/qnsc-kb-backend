@@ -205,6 +205,7 @@ module "stack" {
   embedding_model   = "BAAI/bge-m3"
   embedding_version = "bge-m3-v1"
 
+  alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id
   microsoft_client_id   = var.microsoft_client_id
   google_client_id      = var.google_client_id

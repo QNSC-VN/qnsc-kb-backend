@@ -61,11 +61,27 @@ data "terraform_remote_state" "platform" {
 module "ecr" {
   source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecr?ref=ecr-v2.0.0"
 
-  # Defaults keep 30 releases (v*) and 20 builds (sha-*), as separate rules. Note that
-  # qnsc-kb images are LARGE — the api and worker images carry torch plus the baked
-  # bge-m3 weights — so the keep-counts cost meaningfully more storage here than they
-  # do for a Node product. Re-run `aws ecr start-lifecycle-policy-preview` (a dry run)
-  # before changing them.
+  # Lower than the module defaults (30 releases / 20 builds), but for a narrower reason
+  # than "the images are big".
+  #
+  # These images ARE big — the api and worker carry torch, paddle and the baked bge-m3
+  # weights — but ECR bills unique LAYERS, and the `deps` and `model-cache` stages are
+  # shared across all three images and unchanged between builds unless poetry.lock or the
+  # model changes. The per-build delta is the application COPY layer, which is small. So
+  # steady-state storage is roughly one ~4-5 GB layer set plus deltas, and multiplying
+  # image size by keep-count overstates it by an order of magnitude.
+  #
+  # What these counts actually insure against is the case where that assumption breaks: a
+  # dependency bump invalidates the shared layers, and every build after it carries its
+  # own multi-GB copy until the old ones expire. 10 and 10 bound that without losing
+  # anything anyone reads — a build older than the last ten is not something we roll back
+  # to, we rebuild.
+  #
+  # Re-run `aws ecr start-lifecycle-policy-preview` (a dry run) before changing these; it
+  # is the only way to see what a policy will delete.
+  keep_release_count = 10
+  keep_build_count   = 10
+
   repository_names     = ["qnsc-kb-api", "qnsc-kb-worker", "qnsc-kb-migrator"]
   image_tag_mutability = "MUTABLE" # allows re-tagging :latest
   kms_key_arn          = data.terraform_remote_state.platform.outputs.kms_key_arn
