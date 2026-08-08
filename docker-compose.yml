@@ -36,7 +36,12 @@ services:
   api:
     build:
       context: .
-      dockerfile: docker/Dockerfile.api
+      dockerfile: Dockerfile
+      target: api
+      args:
+        # Local builds skip the ~2.3 GB weight bake — the bind mount below means the
+        # model is downloaded to the developer's own HuggingFace cache on first use.
+        BAKE_EMBEDDING_MODEL: "false"
     ports:
       - "8000:8000"
     volumes:
@@ -61,7 +66,10 @@ services:
   worker:
     build:
       context: .
-      dockerfile: docker/Dockerfile.worker
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        BAKE_EMBEDDING_MODEL: "false"
     volumes:
       - .:/app
     command: celery -A src.workers.celery_app worker --pool=solo --concurrency=1 --prefetch-multiplier=1 --loglevel=info
@@ -96,7 +104,10 @@ services:
   beat:
     build:
       context: .
-      dockerfile: docker/Dockerfile.worker
+      dockerfile: Dockerfile
+      target: worker
+      args:
+        BAKE_EMBEDDING_MODEL: "false"
     volumes:
       - .:/app
     command: celery -A src.workers.celery_app beat --loglevel=info

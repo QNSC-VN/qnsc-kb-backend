@@ -64,12 +64,15 @@ services:
       timeout: 10s
       retries: 20
 
+  # Migrations are NOT run from this service any more — see the `migrator` service
+  # below. Run it once before starting the stack:
+  #   docker compose -f docker-compose.production.yml --profile migrate run --rm migrator
   api:
     build:
       context: .
-      dockerfile: docker/Dockerfile.api
+      dockerfile: Dockerfile
+      target: api
     restart: unless-stopped
-    entrypoint: ["/app/docker/entrypoint.sh"]
     command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     environment:
       ENVIRONMENT: production
@@ -98,7 +101,10 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
       FRONTEND_URL: ${FRONTEND_URL:?set FRONTEND_URL}
       DATABASE_URL: postgresql+asyncpg://${APP_DATABASE_USER:-qnsc_app}:${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB:-qnsc_kb}
-      MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_ADMIN_USER:-postgres}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@db:5432/${POSTGRES_DB:-qnsc_kb}
+      # MIGRATION_DATABASE_URL is deliberately absent here. It carries the Postgres
+      # MASTER credential, and this container no longer runs migrations, so holding it
+      # would grant the internet-facing service superuser DDL it never uses. It lives
+      # on the `migrator` service alone.
       APP_DATABASE_ROLE: ${APP_DATABASE_USER:-qnsc_app}
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379/0
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -129,7 +135,8 @@ services:
   worker:
     build:
       context: .
-      dockerfile: docker/Dockerfile.worker
+      dockerfile: Dockerfile
+      target: worker
     restart: unless-stopped
     command: ["celery", "-A", "src.workers.celery_app", "worker", "--loglevel=info", "-Q", "celery,ingestion,connectors,permissions"]
     environment:
@@ -181,7 +188,8 @@ services:
   beat:
     build:
       context: .
-      dockerfile: docker/Dockerfile.worker
+      dockerfile: Dockerfile
+      target: worker
     restart: unless-stopped
     command: ["celery", "-A", "src.workers.celery_app", "beat", "--loglevel=info"]
     environment:
@@ -195,6 +203,32 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # One-shot: create the least-privilege app role if missing, then run Alembic.
+  # Behind a profile so `docker compose up` never migrates implicitly — the same
+  # separation the ECS deploy pipeline enforces, where this runs as its own task
+  # before any service is rolled.
+  #
+  #   docker compose -f docker-compose.production.yml --profile migrate run --rm migrator
+  migrator:
+    profiles: ["migrate"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrator
+    environment:
+      ENVIRONMENT: production
+      # The MASTER credential — migrations create extensions (vector, pgcrypto) and
+      # grant privileges, neither of which the application role may do.
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_ADMIN_USER:-postgres}:${POSTGRES_ADMIN_PASSWORD:?set POSTGRES_ADMIN_PASSWORD}@db:5432/${POSTGRES_DB:-qnsc_kb}
+      # Read by scripts/bootstrap_db_role.py to create/sync the role, and by
+      # migration 20260802_05_tenant_rls to decide whom to GRANT to.
+      APP_DATABASE_ROLE: ${APP_DATABASE_USER:-qnsc_app}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}
+      ENABLE_RLS: "true"
+    depends_on:
+      db:
         condition: service_healthy
 
 volumes:
