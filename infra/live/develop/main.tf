@@ -144,6 +144,32 @@ module "stack" {
   // to boot when malware scanning is off.
   malware_scan_enabled = true
 
+  // ── Off-hours idling ───────────────────────────────────────────────────────
+  // Two passes, not one. A single nightly stop does not hold, because the deploy
+  // pipeline's `ensure_rds` step wakes this environment whenever a deploy lands — so a
+  // merge after the stop leaves everything running until the following night. rally
+  // measured exactly that: its develop database published CPU datapoints every hour of
+  // every night while a stop schedule fired correctly each evening.
+  //
+  // Midnight ends the working day; 03:00 catches an environment woken by a late deploy.
+  //
+  // KNOWN CONSEQUENCE, because it is not obvious: scaling the worker to zero stops
+  // Celery beat with it, so nothing scheduled runs overnight — no outbox replay, no
+  // cloud-connector polling. In develop that is the intended trade. Beat resumes at the
+  // wake, and the outbox is a queue rather than a stream, so pending rows are replayed
+  // then rather than lost. Production must not take this setting for that reason.
+  idle_schedule = "cron(0 0,3 * * ? *)"
+
+  // 08:00 local, every day. Deploys already wake this environment, but that covers the
+  // days it is CHANGED rather than the days it is USED — someone opening it on a
+  // morning nobody merged would find it stopped, and RDS takes minutes to reach
+  // `available`, which reads as an outage rather than something to wait out.
+  //
+  // 08:00 rather than 09:00 because the database needs those minutes and the API tasks
+  // then have to pass a health check, so the environment is serving before the working
+  // day rather than during its first minutes.
+  wake_schedule = "cron(0 8 * * ? *)"
+
   // Must match the weights baked into the image. Fixes EMBEDDING_DIMENSION at 1024,
   // which is the pgvector column width and the HNSW index built by migration
   // 20260802_03 — changing it later means a migration and a full re-embed.

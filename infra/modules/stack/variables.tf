@@ -302,3 +302,42 @@ variable "container_insights" {
   default     = "disabled"
   description = "Stated, never inherited: the ecs-cluster module defaults to \"enhanced\", whose per-task metrics bill as custom CloudWatch metrics."
 }
+
+// ── Cost schedules ───────────────────────────────────────────────────────────
+variable "idle_schedule" {
+  type    = string
+  default = null
+
+  description = <<-EOT
+    EventBridge Scheduler cron, Asia/Ho_Chi_Minh, that stops the database and scales
+    both services to zero. null disables idling entirely.
+
+    Read this together with `wake_schedule` and with the deploy pipeline: they form a
+    LOOP, not three independent switches. The deploy reusable's `ensure_rds` step starts
+    a stopped database and restores a service left at zero, so ANY deploy wakes the
+    environment regardless of the hour. A single nightly stop therefore does not hold —
+    rally measured exactly that, with its develop database publishing CPU datapoints
+    every hour of every night because deploys kept landing after the stop.
+
+    Two passes are the fix (e.g. "cron(0 0,3 * * ? *)"): the first ends the working day,
+    the second catches an environment woken by a late deploy.
+  EOT
+}
+
+variable "wake_schedule" {
+  type    = string
+  default = null
+
+  description = <<-EOT
+    EventBridge Scheduler cron, Asia/Ho_Chi_Minh, that starts the database and restores
+    both services to one task. null means the environment is woken only by a deploy.
+
+    Worth having even though deploys wake it: that covers the days the environment is
+    CHANGED, not the days it is merely USED. Someone who opens it on a morning nobody
+    merged finds it stopped, and RDS takes minutes to reach `available`, so it cannot be
+    waited out — it reads as an outage.
+
+    Set it early enough that the database is serving before the working day rather than
+    during its first minutes.
+  EOT
+}

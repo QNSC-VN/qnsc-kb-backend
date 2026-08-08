@@ -523,3 +523,247 @@ check "malware_scan_matches_production_mode" {
     error_message = "ENVIRONMENT is pinned to production in every environment, and validate_production() refuses to boot when MALWARE_SCAN_ENABLED is false. Disabling the scanner requires dropping out of production mode, which also unpins API docs and self-registration."
   }
 }
+
+// ── Idling ────────────────────────────────────────────────────────────────────
+// Stops the database and takes both services to zero. This is the whole cost posture
+// for a non-production environment: Fargate and RDS bill for time, and this environment
+// is exercised by CI deploys and occasional manual checks rather than by users.
+//
+// The cache is NOT stopped, because ElastiCache has no stopped state — only delete —
+// and it is the Celery broker rather than an optional cache. It is the one component of
+// an idled environment that keeps billing.
+resource "aws_iam_role" "idler" {
+  count = var.idle_schedule == null ? 0 : 1
+  name  = "${local.name}-idler"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      // Confused-deputy guard: without it, a schedule in any other account could assume
+      // this role. Scoped to this account's schedules only.
+      Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id } }
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "idler" {
+  count = var.idle_schedule == null ? 0 : 1
+  name  = "idle-environment"
+  role  = aws_iam_role.idler[0].id
+
+  // Stop only. Not Start, not Reboot: this schedule's entire job is to remove capacity,
+  // and a role that can also start an instance turns a scheduling mistake into a cost
+  // increase. Waking has its own role below, and the deploy pipeline has its own grant
+  // in live/_shared.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "StopDatabase"
+        Effect   = "Allow"
+        Action   = "rds:StopDBInstance"
+        Resource = module.rds.instance_arn
+      },
+      {
+        // Scaling to zero as well as stopping the database, because stopping only the
+        // database leaves Fargate tasks running against an instance they cannot reach:
+        // still billed, unable to serve, and — since /health/live answers 200 without
+        // touching a dependency — reporting themselves healthy the whole time.
+        Sid    = "ScaleServicesToZero"
+        Effect = "Allow"
+        Action = "ecs:UpdateService"
+        Resource = [
+          module.api.service_arn,
+          module.worker.service_arn,
+        ]
+      },
+    ]
+  })
+}
+
+resource "aws_scheduler_schedule" "rds_stop" {
+  count       = var.idle_schedule == null ? 0 : 1
+  name        = "${local.name}-rds-stop"
+  description = "Stops ${module.rds.identifier}; see var.idle_schedule for why this exists"
+
+  schedule_expression          = var.idle_schedule
+  schedule_expression_timezone = "Asia/Ho_Chi_Minh"
+
+  // OFF, not a window: this is not load-sensitive work, and an exact time keeps the
+  // relationship between a run and its CloudTrail entry unambiguous.
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:rds:stopDBInstance"
+    role_arn = aws_iam_role.idler[0].arn
+    input    = jsonencode({ DbInstanceIdentifier = module.rds.identifier })
+
+    // No retries and no dead-letter queue, deliberately. The common outcome is
+    // InvalidDBInstanceState because the instance is ALREADY STOPPED — the desired
+    // state, not an error. Retrying would generate noise for a success and a DLQ would
+    // collect messages nobody should act on. A real permissions failure still shows up
+    // in CloudTrail and in the schedule's own metrics.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
+// `desired_count` is under `ignore_changes` in the ecs-service module, so setting it out
+// of band is the sanctioned, non-drifting mechanism — which is why this uses
+// ecs:UpdateService rather than an Application Auto Scaling scheduled action. A
+// scheduled action mutates the scalable target's min/max, and aws_appautoscaling_target
+// has no ignore_changes on those, so every plan would show drift and any apply during
+// the idle window would silently wake the environment.
+//
+// A floor of 0 on both services is what makes this hold: with a floor of 1, Application
+// Auto Scaling restores the service within minutes and the scale-to-zero undoes itself.
+resource "aws_scheduler_schedule" "ecs_scale_down" {
+  for_each = var.idle_schedule == null ? {} : {
+    api    = module.api.service_name
+    worker = module.worker.service_name
+  }
+
+  name        = "${local.name}-${each.key}-scale-down"
+  description = "Scales ${each.value} to zero; see var.idle_schedule"
+
+  schedule_expression          = var.idle_schedule
+  schedule_expression_timezone = "Asia/Ho_Chi_Minh"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ecs:updateService"
+    role_arn = aws_iam_role.idler[0].arn
+    input = jsonencode({
+      Cluster      = module.ecs_cluster.cluster_name
+      Service      = each.value
+      DesiredCount = 0
+    })
+
+    // Idempotent — scaling an already-zero service to zero succeeds — so unlike the RDS
+    // stop there is no expected-failure case here. Retries stay off for consistency; a
+    // missed run is corrected by the next tick.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
+// ── Waking ────────────────────────────────────────────────────────────────────
+// The reverse of idling, on its own cron. See var.wake_schedule for why this exists
+// even though every deploy already wakes the environment.
+resource "aws_iam_role" "waker" {
+  count = var.wake_schedule == null ? 0 : 1
+  name  = "${local.name}-waker"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "scheduler.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+      Condition = { StringEquals = { "aws:SourceAccount" = data.aws_caller_identity.current.account_id } }
+    }]
+  })
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "waker" {
+  count = var.wake_schedule == null ? 0 : 1
+  name  = "wake-environment"
+  role  = aws_iam_role.waker[0].id
+
+  // Start only, mirroring the idler's stop only. No rds:StopDBInstance, no Reboot, no
+  // Delete: this role's entire job is to add capacity back.
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "StartDatabase"
+        Effect   = "Allow"
+        Action   = "rds:StartDBInstance"
+        Resource = module.rds.instance_arn
+      },
+      {
+        Sid    = "RestoreServices"
+        Effect = "Allow"
+        Action = "ecs:UpdateService"
+        Resource = [
+          module.api.service_arn,
+          module.worker.service_arn,
+        ]
+      },
+    ]
+  })
+}
+
+resource "aws_scheduler_schedule" "rds_start" {
+  count       = var.wake_schedule == null ? 0 : 1
+  name        = "${local.name}-rds-start"
+  description = "Starts ${module.rds.identifier}; see var.wake_schedule for why this exists"
+
+  schedule_expression          = var.wake_schedule
+  schedule_expression_timezone = "Asia/Ho_Chi_Minh"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:rds:startDBInstance"
+    role_arn = aws_iam_role.waker[0].arn
+    input    = jsonencode({ DbInstanceIdentifier = module.rds.identifier })
+
+    // Mirror of the stop schedule: starting an already-started instance fails with
+    // InvalidDBInstanceState, which is the desired state rather than an error.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
+resource "aws_scheduler_schedule" "ecs_scale_up" {
+  for_each = var.wake_schedule == null ? {} : {
+    api    = module.api.service_name
+    worker = module.worker.service_name
+  }
+
+  name        = "${local.name}-${each.key}-scale-up"
+  description = "Restores ${each.value} to one task; see var.wake_schedule"
+
+  schedule_expression          = var.wake_schedule
+  schedule_expression_timezone = "Asia/Ho_Chi_Minh"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = "arn:aws:scheduler:::aws-sdk:ecs:updateService"
+    role_arn = aws_iam_role.waker[0].arn
+    input = jsonencode({
+      Cluster      = module.ecs_cluster.cluster_name
+      Service      = each.value
+      DesiredCount = 1
+    })
+
+    // One task, never more, for BOTH services. The worker carries Celery beat as a
+    // container, and beat is a singleton — restoring two worker tasks would double every
+    // scheduled job. The api's own ceiling is var.api.max_count, which autoscaling would
+    // handle if it were enabled.
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
