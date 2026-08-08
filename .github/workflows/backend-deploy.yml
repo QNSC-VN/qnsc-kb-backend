@@ -1,0 +1,180 @@
+# =============================================================================
+# Backend · Deploy — thin caller of the shared reusable (qnsc-ci).
+#
+# Triggers:
+#   develop → push to main (auto)
+#   prod    → push a semver tag v*.*.* (gated by the "production" GitHub Environment's
+#             required reviewer, enforced inside the reusable)
+#
+# The reusable builds and attests on main, promotes that exact image on a tag, runs the
+# migrator task, then rolls the ECS services. All ECS_*/RDS/APP_URL configuration is
+# read from environment-scoped GitHub variables published by infra-apply.yml; only the
+# AWS account id is passed explicitly (least privilege — no `secrets: inherit`).
+# =============================================================================
+name: Backend · Deploy
+
+on:
+  push:
+    branches: [main]
+    # paths-ignore fires only when EVERY changed file matches, so a shared change still
+    # deploys — under-deploying is impossible.
+    #
+    # `infra/**` is deliberately NOT ignored. Terraform owns the task definition's
+    # environment (DATABASE_HOST, REDIS_URL, SOURCE_STORAGE_BUCKET, …), but the
+    # ecs-service module sets `ignore_changes = [task_definition]` so the SERVICE is
+    # never moved onto the revision Terraform registers — this pipeline owns that. With
+    # infra ignored, an infra-only merge would register a correct new task definition
+    # that nothing ever rolls onto, and the change would silently not take effect.
+    #
+    # Cost: a Terraform-only merge rebuilds images it does not strictly need. Minutes of
+    # CI in exchange for removing a class of silent drift.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+' # semver only — no -rc suffix
+
+  # Manual redeploy of whatever main currently holds. DEVELOP ONLY — a prod deploy still
+  # requires a semver tag, so this cannot skip that gate. Exists because a merged fix can
+  # otherwise become undeployable: if its CI run was cancelled, the fail-closed gate
+  # below correctly refuses, and re-running the deploy cannot help because the missing
+  # CI run is the problem. An empty commit is no substitute — paths-ignore is evaluated
+  # against the changed-file list, and a commit that changes nothing matches every rule.
+  workflow_dispatch:
+
+concurrency:
+  # Serialise by ENVIRONMENT, not by raw ref: all prod (tag) deploys share one group so
+  # prod migrations never run concurrently; develop shares another. The two still run in
+  # parallel.
+  group: deploy-backend-${{ startsWith(github.ref, 'refs/tags/') && 'prod' || 'develop' }}
+  cancel-in-progress: false # never cancel a running deploy
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # Ordering gate — never roll the app ahead of its own infrastructure.
+  #
+  # Backend·Deploy and Infrastructure·Apply both fire on the same push as independent
+  # workflows. Without sequencing, a commit changing both infra and app code races: the
+  # migrator runs against the OLD task definition, still pointing at whatever the infra
+  # change was replacing.
+  #
+  # Deterministic, and keyed on the commit sha so it can never wait on an unrelated run:
+  #   - commit does NOT touch infra/(live|modules) → no infra run exists, proceed
+  #   - commit DOES touch them                     → wait for that run on THIS sha
+  # ───────────────────────────────────────────────────────────────────────────
+  wait-for-infra:
+    name: Wait for infrastructure
+    runs-on: ubuntu-latest
+    # Generous: on a tag this waits for apply-prod, which sits behind the production
+    # environment's required reviewer. Timing out here is safe — the deploy is
+    # re-runnable — but it must not fire just because an approver stepped away.
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Does this commit change infrastructure?
+        id: touched
+        run: |
+          # Tags ALWAYS gate: apply-prod is `if: ref_type == 'tag'`, so a tag is the only
+          # thing that applies prod infra — and the prod deploy fires on the same tag.
+          # Path filters are not applied to tag pushes either, so infra-apply always runs
+          # for a tag regardless of what the commit touched.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # infra/modules/** counts too: `module "stack"` is a LOCAL path module, so a
+          # module-only commit changes the plan and triggers infra-apply.
+          if git diff --name-only HEAD~1 HEAD | grep -qE '^infra/(live|modules)/'; then
+            echo "infra=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "infra=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Wait for Infrastructure · Apply on this commit
+        if: steps.touched.outputs.infra == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The sibling run may not be registered the instant this job starts.
+          #
+          # `|| ID=""` keeps a transient gh/API failure from ending the step: these
+          # runners use `set -e`, and an assignment takes its command substitution's exit
+          # status, so a rate-limited `gh run list` would skip the retry loop entirely and
+          # turn a recoverable blip into a failed gate.
+          for _ in $(seq 1 12); do
+            ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow=infra-apply.yml \
+                   --commit "$GITHUB_SHA" \
+                   --limit 1 --json databaseId --jq '.[0].databaseId // empty') || ID=""
+            [ -n "$ID" ] && break
+            sleep 10
+          done
+
+          if [ -z "${ID:-}" ]; then
+            echo "::warning::infra changed but no Infrastructure · Apply run found for $GITHUB_SHA — proceeding."
+            exit 0
+          fi
+
+          echo "Waiting on infra-apply run $ID …"
+          gh run watch --repo "$GITHUB_REPOSITORY" "$ID" --exit-status
+          echo "Infrastructure applied; deploy may proceed."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CI gate — a red main must not deploy.
+  #
+  # Fails CLOSED: with no CI run found for the sha, block rather than ship blind.
+  # ───────────────────────────────────────────────────────────────────────────
+  wait-for-ci:
+    name: Wait for Backend · CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Wait for Backend · CI on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "Tag deploy — Backend · CI does not run on tags, and prod is gated by the production Environment reviewer."; exit 0
+          fi
+          # This job does not check out the repo, so gh cannot infer it from a remote.
+          for _ in $(seq 1 12); do
+            ID=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow backend-ci.yml \
+                   --branch main --commit "$GITHUB_SHA" \
+                   --limit 1 --json databaseId --jq '.[0].databaseId // empty') || ID=""
+            [ -n "$ID" ] && break
+            sleep 10
+          done
+          if [ -z "${ID:-}" ]; then
+            echo "::error::No Backend · CI run found for $GITHUB_SHA — blocking deploy (fail closed)."
+            exit 1
+          fi
+          echo "Waiting on Backend · CI run $ID …"
+          gh run watch --repo "$GITHUB_REPOSITORY" "$ID" --exit-status
+          echo "Backend · CI succeeded; deploy may proceed."
+
+  deploy:
+    needs: [wait-for-infra, wait-for-ci]
+    uses: QNSC-VN/qnsc-ci/.github/workflows/backend-deploy.yml@v1.7.0
+    with:
+      product: qnsc-kb
+      has_worker: true
+      has_migrator: true
+      # Celery beat rides in the worker TASK as a second container, so rolling the
+      # worker service rolls beat with it — there is no third service to declare.
+      #
+      # READINESS, not liveness: /health/live returns 200 without touching a dependency,
+      # so it cannot tell a working deploy from one whose database or cache is gone.
+      # /health/ready checks both.
+      health_path: /health/ready
+    # Least privilege: pass only what the reusable declares (no `secrets: inherit`).
+    secrets:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}

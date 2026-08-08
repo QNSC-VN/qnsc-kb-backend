@@ -1,0 +1,46 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "ci"]
+    commit-message:
+      prefix: "ci(deps)"
+
+  - package-ecosystem: "pip"
+    # Reads pyproject.toml + poetry.lock. Grouped so a weekly run opens two PRs rather
+    # than twenty — this dependency graph is large (torch, paddle, their transitives).
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "deps"
+    open-pull-requests-limit: 5
+    groups:
+      production-dependencies:
+        dependency-type: "production"
+      development-dependencies:
+        dependency-type: "development"
+    ignore:
+      # Pinned deliberately in pyproject.toml and NOT safe to bump automatically:
+      # torch/paddle carry the NumPy 1.x constraint the OCR stack depends on, and
+      # markitdown 0.0.2 is the last release compatible with it. A bot bump here breaks
+      # ingestion in a way no unit test would catch.
+      - dependency-name: "torch"
+      - dependency-name: "paddlepaddle"
+      - dependency-name: "paddleocr"
+      - dependency-name: "numpy"
+      - dependency-name: "markitdown"
+
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "deps(docker)"
