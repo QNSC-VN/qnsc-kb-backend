@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "QNSC Knowledge Base"
@@ -24,6 +24,30 @@ class Settings(BaseSettings):
     MIGRATION_DATABASE_URL: str | None = None
     APP_DATABASE_ROLE: str | None = None
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # ── Connection PARTS — an alternative to the two URLs above ────────────────
+    # A managed database hands out its credentials as a rotatable secret, and a
+    # container platform injects a secret as its own environment variable. There is
+    # no supported way to interpolate one into the middle of a URL string at task
+    # start, so a deployment that only accepts DATABASE_URL forces the whole URL —
+    # password included — to be a hand-maintained secret. That copy then silently
+    # goes stale on the next endpoint change or credential rotation, and the failure
+    # appears as an authentication error somewhere else entirely.
+    #
+    # When DATABASE_HOST is set, the URL is composed from these parts instead (see
+    # model_post_init). An explicitly supplied DATABASE_URL always wins, so local
+    # development, tests and Compose are untouched.
+    DATABASE_HOST: str | None = None
+    DATABASE_PORT: int = 5432
+    DATABASE_NAME: str = "qnsc_kb"
+    DATABASE_USER: str | None = None
+    DATABASE_PASSWORD: str | None = None
+    # The master credential, used ONLY by the migrator task: migrations create
+    # extensions (vector, pgcrypto) and grant privileges, neither of which the
+    # least-privilege application role may do. Host, port and name are shared with
+    # the application parts above.
+    MIGRATION_DATABASE_USER: str | None = None
+    MIGRATION_DATABASE_PASSWORD: str | None = None
 
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
@@ -95,7 +119,32 @@ class Settings(BaseSettings):
     MALWARE_SCANNER_PORT: int = 3310
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
 
+    def _compose_dsn(self, user: str, password: str) -> str:
+        """Build a SQLAlchemy asyncpg URL from the connection parts.
+
+        The password is percent-encoded: a generated credential routinely contains
+        ``@``, ``/`` or ``:``, each of which terminates a different component of a URL,
+        so pasting one in raw yields a URL that parses cleanly into the wrong host,
+        port or database.
+        """
+        return (
+            f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
+            f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
+        )
+
     def model_post_init(self, __context: Any) -> None:
+        # Compose the database URLs from parts when a host is supplied and no explicit
+        # URL was given. `model_fields_set` is what makes "explicit" mean explicit:
+        # DATABASE_URL has a non-empty default, so testing its truthiness would treat
+        # the localhost default as a deliberate choice and ignore the injected parts.
+        if self.DATABASE_HOST:
+            if "DATABASE_URL" not in self.model_fields_set and self.DATABASE_USER and self.DATABASE_PASSWORD:
+                self.DATABASE_URL = self._compose_dsn(self.DATABASE_USER, self.DATABASE_PASSWORD)
+            if not self.MIGRATION_DATABASE_URL and self.MIGRATION_DATABASE_USER and self.MIGRATION_DATABASE_PASSWORD:
+                self.MIGRATION_DATABASE_URL = self._compose_dsn(
+                    self.MIGRATION_DATABASE_USER, self.MIGRATION_DATABASE_PASSWORD
+                )
+
         if self.EMBEDDING_DIMENSION is None:
             model = self.EMBEDDING_MODEL.lower()
             if "bge-m3" in model:
