@@ -73,10 +73,20 @@ def main() -> int:
         )
         return 0
 
-    url = os.getenv("MIGRATION_DATABASE_URL") or os.getenv("DATABASE_URL")
+    # Resolved through Settings, NOT os.getenv, because a deployed migrator is handed
+    # connection PARTS (DATABASE_HOST + MIGRATION_DATABASE_USER/PASSWORD) rather than a
+    # URL — a password arrives as its own injected secret and cannot be interpolated into
+    # the middle of a URL at task start. Settings.model_post_init composes the URL from
+    # whichever form is present, so reading the environment directly here would work
+    # locally and fail in every deployed environment.
+    from src.core.config import settings
+
+    url = settings.MIGRATION_DATABASE_URL or settings.DATABASE_URL
     if not url:
         print(
-            "bootstrap_db_role: neither MIGRATION_DATABASE_URL nor DATABASE_URL is set",
+            "bootstrap_db_role: no database connection configured — set "
+            "MIGRATION_DATABASE_URL, or DATABASE_HOST with MIGRATION_DATABASE_USER and "
+            "MIGRATION_DATABASE_PASSWORD",
             file=sys.stderr,
         )
         return 1
