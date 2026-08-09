@@ -76,19 +76,22 @@ locals {
   // Every app secret this stack owns. Terraform creates the CONTAINER; values are
   // pasted in out of band and never enter state. The deploy preflight in qnsc-ci
   // refuses to deploy while any injected secret is still empty.
-  secret_names = concat([
-    "secret-key",          // JWT signing
-    "data-encryption-key", // at-rest encryption of stored connector credentials
-    "app-db-password",     // password for var.app_db_role
-    "gemini-api-key",      // LLM + restructuring
-    "r2-access-key-id",    // bucket-scoped R2 credential pair
-    "r2-secret-access-key",
-    ], var.microsoft_client_id != "" ? ["microsoft-client-secret"] : [],
-    var.google_client_id != "" ? ["google-client-secret"] : [],
-    // Only when a tunnel is actually in use. A secret that is never populated AND
-    // never injected still bills, and shows up in every "which secrets are empty?"
-    // audit as a permanent false positive — which is how a real one gets missed.
-    var.tunnel_enabled ? ["tunnel-token"] : [],
+  // A MAP of key → description, not a list: the module keys the bundle's JSON off these
+  // names and uses the description on the secret itself.
+  secret_names = merge({
+    "secret-key"           = "JWT signing key (SECRET_KEY)"
+    "data-encryption-key"  = "At-rest encryption of stored connector credentials (DATA_ENCRYPTION_KEY)"
+    "app-db-password"      = "Password for the least-privilege application role (${var.app_db_role})"
+    "gemini-api-key"       = "Gemini API key for answering and restructuring"
+    "r2-access-key-id"     = "R2 credential scoped to the sources bucket"
+    "r2-secret-access-key" = "R2 credential scoped to the sources bucket"
+    },
+    var.microsoft_client_id != "" ? { "microsoft-client-secret" = "Microsoft connector OAuth client secret" } : {},
+    var.google_client_id != "" ? { "google-client-secret" = "Google connector OAuth client secret" } : {},
+    // Only when a tunnel is actually in use. A secret that is never populated AND never
+    // injected still bills, and shows up in every "which secrets are empty?" audit as a
+    // permanent false positive — which is how a real one gets missed.
+    var.tunnel_enabled ? { "tunnel-token" = "Cloudflare Tunnel connector token for the api sidecar" } : {},
   )
 
   // IAM resource list for the secret containers this stack owns.
