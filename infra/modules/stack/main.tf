@@ -194,7 +194,11 @@ locals {
 // runtime guard — three mechanisms replacing one property. Revisit past ~30 secrets,
 // where the per-secret fee starts to outweigh it. This stack has 9.
 module "secrets" {
-  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/secrets?ref=secrets-v2.1.0"
+  # v2.1.1, not v2.1.0: the earlier output wrapped its ARNs in distinct(), which returns
+  # an UNKNOWN-LENGTH list while the secrets do not exist yet — and ecs-service gates its
+  # execution policy on `count = length(var.secret_arns) > 0`, so the plan failed outright
+  # on a first apply. Only ever visible when creating a new environment.
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/secrets?ref=secrets-v2.1.1"
 
   prefix               = "${var.product}/${var.env}"
   kms_key_arn          = local.kms_key_arn
