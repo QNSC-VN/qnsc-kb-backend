@@ -26,9 +26,25 @@ variable "image_tag" {
 }
 
 variable "cloudflare_account_id" {
-  type        = string
-  default     = ""
-  description = "Cloudflare account that owns the Pages project. NOT a secret. Empty count-gates the Pages module, so the AWS half applies on its own."
+  type    = string
+  default = ""
+
+  description = <<-EOT
+    Cloudflare account that owns the Pages project. NOT a secret.
+
+    Supplied by CI as TF_VAR_cloudflare_account_id from the ORG-level
+    CLOUDFLARE_ACCOUNT_ID variable, in BOTH the plan and the apply. That parity is the
+    point: the Pages and DNS modules are count-gated on this value, so a plan that
+    cannot see it reports a phantom create or destroy of both — and a real destroy is
+    easy to miss among phantoms.
+
+    Org-level rather than environment-scoped for the same reason: an environment-scoped
+    variable resolves to "" in a plan job, which has no `environment:` context.
+
+    The empty default is only for a local plan without it, which is a valid
+    intermediate state — the AWS half of the stack applies on its own and Cloudflare
+    arrives in a later apply.
+  EOT
 }
 
 variable "tunnel_id" {

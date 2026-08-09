@@ -26,9 +26,18 @@ variable "cloudflare_account_id" {
   description = <<-EOT
     Cloudflare account that owns the Pages project. NOT a secret.
 
-    Empty until the account is wired up, and that is a safe intermediate state: the
-    Pages module is count-gated on it, so the AWS half of this stack applies on its own
-    and the SPA arrives in a later apply.
+    Supplied by CI as TF_VAR_cloudflare_account_id from the ORG-level
+    CLOUDFLARE_ACCOUNT_ID variable, in BOTH the plan and the apply. That parity is the
+    point: the Pages and DNS modules are count-gated on this value, so a plan that
+    cannot see it reports a phantom create or destroy of both — and a real destroy is
+    easy to miss among phantoms.
+
+    Org-level rather than environment-scoped for the same reason: an environment-scoped
+    variable resolves to "" in a plan job, which has no `environment:` context.
+
+    The empty default is only for a local plan without it, which is a valid
+    intermediate state — the AWS half of the stack applies on its own and Cloudflare
+    arrives in a later apply.
   EOT
 }
 

@@ -120,6 +120,10 @@ jobs:
         run: tofu apply -input=false -auto-approve
         env:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Org-level variable, so it is NOT environment-scoped and resolves in the plan
+          # job too — which is what keeps plan and apply honest about the count-gated
+          # Cloudflare resources.
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
       # Short-lived installation token from the RELEASE_BOT App, so no long-lived PAT is
       # needed. Requires "Variables: read and write" on BOTH qnsc-kb repos — the
@@ -222,6 +226,7 @@ jobs:
         run: tofu apply -input=false -auto-approve
         env:
           TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_cloudflare_account_id: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           # Pin the prod image to the exact release tag that triggered this apply, so an
           # infra apply never resets the task definition to :latest.
           TF_VAR_image_tag: ${{ github.ref_name }}
