@@ -68,7 +68,6 @@ module "stack" {
   // stacks have their ALB disabled anyway, so a tunnel is the only ingress available
   // without turning one back on.
   tunnel_enabled = true
-  tunnel_id      = var.tunnel_id
 
   // ── Sizing ─────────────────────────────────────────────────────────────────
   // The API embeds the QUERY on every search, in-process, so it carries the same

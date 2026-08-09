@@ -41,22 +41,6 @@ variable "cloudflare_account_id" {
   EOT
 }
 
-variable "tunnel_id" {
-  type    = string
-  default = ""
-
-  description = <<-EOT
-    UUID of the `qnsc-kb-develop` Cloudflare Tunnel.
-
-    Created OUT OF BAND: a tunnel and its connector token are one Cloudflare object, so
-    Terraform cannot mint them. Create the tunnel, put its token in the `tunnel-token`
-    secret, and set the UUID here.
-
-    While empty, the `tunnel_has_id` check in the stack module reports a warning on
-    every plan and apply — checks are advisory, so read it rather than relying on it to
-    stop you. Applying in that state deploys an API with no route to it.
-  EOT
-}
 
 variable "microsoft_client_id" {
   type        = string

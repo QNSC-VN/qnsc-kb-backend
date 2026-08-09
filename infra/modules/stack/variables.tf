@@ -81,16 +81,6 @@ variable "tunnel_enabled" {
   EOT
 }
 
-variable "tunnel_id" {
-  type        = string
-  default     = ""
-  description = <<-EOT
-    Cloudflare Tunnel UUID. Its CNAME target is <tunnel_id>.cfargotunnel.com.
-
-    A tunnel and its connector token are ONE Cloudflare object created out of band —
-    Terraform does not mint them. Put the token in the `tunnel-token` secret.
-  EOT
-}
 
 // ── Sizing ───────────────────────────────────────────────────────────────────
 variable "api" {

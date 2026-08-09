@@ -88,11 +88,12 @@ locals {
     },
     var.microsoft_client_id != "" ? { "microsoft-client-secret" = "Microsoft connector OAuth client secret" } : {},
     var.google_client_id != "" ? { "google-client-secret" = "Google connector OAuth client secret" } : {},
-    // Only when a tunnel is actually in use. A secret that is never populated AND never
-    // injected still bills, and shows up in every "which secrets are empty?" audit as a
-    // permanent false positive — which is how a real one gets missed.
-    var.tunnel_enabled ? { "tunnel-token" = "Cloudflare Tunnel connector token for the api sidecar" } : {},
   )
+  // NOTE: "tunnel-token" is deliberately NOT in that map. The tunnel is created by
+  // Terraform (module.tunnel below), which means the connector token is an attribute
+  // rather than something a human copies out of a dashboard — so it is written straight
+  // into its own secret, not pasted into this bundle. The bundle holds exactly the
+  // values Terraform cannot know.
 
   // IAM resource list for the secret containers this stack owns.
   //
@@ -255,13 +256,59 @@ module "ecs_cluster" {
   tags               = local.tags
 }
 
+// ── Cloudflare Tunnel ─────────────────────────────────────────────────────────
+// Created by Terraform, not by hand. The provider exposes the tunnel's id, its CNAME
+// target and its connector token as attributes, so nothing here needs a dashboard visit
+// or a token pasted into a secret — which is what rally still does.
+//
+// Count-gated on the account id for the same reason as the Pages project: the AWS half
+// of this stack must be able to apply before Cloudflare is wired up.
+module "tunnel" {
+  count  = var.tunnel_enabled && var.cloudflare_account_id != "" ? 1 : 0
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.1.0"
+
+  account_id = var.cloudflare_account_id
+  // One tunnel per product per environment. Sharing one across environments would let a
+  // develop task serve production traffic, because a tunnel routes to whichever
+  // connectors hold its token.
+  name = local.name
+}
+
+// The connector token, in its own secret rather than in the bundle above.
+//
+// It cannot live in the bundle: Terraform would have to write the whole JSON object,
+// clobbering the keys a human populated. Its own secret keeps the two ownership models
+// apart — this one is Terraform's, the bundle is the operator's.
+//
+// The value IS in Terraform state, which is the trade the cf-tunnel module documents.
+// The state bucket is KMS-encrypted and readable only by the infra-apply role, which
+// already holds AdministratorAccess, so the token grants nothing that reading the state
+// did not already imply.
+resource "aws_secretsmanager_secret" "tunnel_token" {
+  count = var.tunnel_enabled && var.cloudflare_account_id != "" ? 1 : 0
+
+  name                    = "${var.product}/${var.env}/tunnel-token"
+  description             = "Cloudflare Tunnel connector token (TUNNEL_TOKEN). Managed by Terraform — do not edit by hand."
+  kms_key_id              = local.kms_key_arn
+  recovery_window_in_days = var.secrets_recovery_window_days
+
+  tags = local.tags
+}
+
+resource "aws_secretsmanager_secret_version" "tunnel_token" {
+  count = var.tunnel_enabled && var.cloudflare_account_id != "" ? 1 : 0
+
+  secret_id     = aws_secretsmanager_secret.tunnel_token[0].id
+  secret_string = module.tunnel[0].token
+}
+
 // ── Cloudflare Tunnel sidecar (api only) ─────────────────────────────────────
 // Ingress without an ALB: cloudflared dials out, so the task needs no inbound listener
 // and no public IPv4. The worker has no HTTP surface and gets none.
 module "tunnel_api" {
   source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/tunnel-agent?ref=tunnel-agent-v1.0.0"
 
-  tunnel_token_secret_arn = var.tunnel_enabled ? module.secrets.secret_arns["tunnel-token"] : ""
+  tunnel_token_secret_arn = length(aws_secretsmanager_secret.tunnel_token) > 0 ? aws_secretsmanager_secret.tunnel_token[0].arn : ""
   app_port                = 8000
   log_group               = local.api_log_group
   region                  = var.region
@@ -322,7 +369,7 @@ module "api" {
   // migrator reuses this role and injects the master credential from it; omit it and
   // that task cannot start at all ("unable to pull secrets") — a boot failure, not a
   // runtime error.
-  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn])
+  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn], aws_secretsmanager_secret.tunnel_token[*].arn)
   kms_key_arn = local.kms_key_arn
 
   additional_containers = module.tunnel_api.container_definitions
@@ -491,13 +538,14 @@ module "web" {
 module "dns_api" {
   source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/dns-record?ref=dns-record-v1.1.0"
 
-  enabled = local.cloudflare_zone_id != "" && var.tunnel_enabled
+  enabled = local.cloudflare_zone_id != "" && length(module.tunnel) > 0
   zone_id = local.cloudflare_zone_id
   name    = var.api_record
   type    = "CNAME"
-  // A Cloudflare-internal name that resolves only through the edge, so the record
-  // CANNOT be unproxied — orange cloud is the only way traffic reaches a connector.
-  content = "${var.tunnel_id}.cfargotunnel.com"
+  // Read from the tunnel resource rather than assembled from its id: a Cloudflare-
+  // internal name that resolves only through the edge, so the record CANNOT be unproxied
+  // — orange cloud is the only way traffic reaches a connector.
+  content = one(module.tunnel[*].cname)
   proxied = true
   comment = "${local.name} api → Cloudflare Tunnel"
 }
@@ -506,10 +554,10 @@ module "dns_api" {
 // Each of these encodes a failure that is invisible at apply time and only surfaces
 // once a task tries to start.
 
-check "tunnel_has_id" {
+check "tunnel_needs_cloudflare_account" {
   assert {
-    condition     = !var.tunnel_enabled || var.tunnel_id != ""
-    error_message = "tunnel_enabled is true but tunnel_id is empty — the DNS record would point at \".cfargotunnel.com\" and the API would be unreachable."
+    condition     = !var.tunnel_enabled || var.cloudflare_account_id != ""
+    error_message = "tunnel_enabled is true but cloudflare_account_id is empty, so no tunnel is created and the api has no ingress. Supply the account id (CI passes it from the org variable) or set tunnel_enabled = false."
   }
 }
 

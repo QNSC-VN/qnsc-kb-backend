@@ -50,15 +50,9 @@ Creates 3 ECR repositories and 5 IAM roles. Free until images are pushed.
 
 ### 2. Create the out-of-band objects
 
-Terraform cannot mint any of these.
-
-**Two Cloudflare Tunnels — one per environment.** A tunnel and its connector token are
-one Cloudflare object, so Terraform can only reference the UUID. They must be
-**different tunnels**: a tunnel maps a hostname to whichever connectors hold its token,
-so sharing one would let a develop task serve production traffic.
-
-Record each UUID in `live/<env>/variables.tf` (`tunnel_id`) and keep the token for the
-secret bundle below.
+Terraform cannot mint these. The tunnel is NOT among them any more — the `cf-tunnel`
+module creates it, names it `<product>-<env_slug>`, and writes its connector token
+straight into its own secret. Nothing about a tunnel needs a dashboard visit.
 
 **An R2 API token** scoped to `qnsc-kb-develop-sources`, giving an access key id and
 secret.
@@ -84,10 +78,13 @@ aws secretsmanager put-secret-value \
     "app-db-password":       "<32+ chars>",
     "gemini-api-key":        "<from Google AI Studio>",
     "r2-access-key-id":      "<R2 token>",
-    "r2-secret-access-key":  "<R2 token>",
-    "tunnel-token":          "<cloudflared connector token>"
+    "r2-secret-access-key":  "<R2 token>"
   }'
 ```
+
+`tunnel-token` is deliberately absent: it lives in its own Terraform-managed secret,
+`qnsc-kb/<env>/tunnel-token`, because Terraform knows the value and would clobber this
+JSON object if it had to write one key of it.
 
 Add `microsoft-client-secret` / `google-client-secret` only when the matching client id
 is set — the stack creates those keys only then, deliberately, because a secret that is

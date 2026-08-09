@@ -47,20 +47,6 @@ variable "cloudflare_account_id" {
   EOT
 }
 
-variable "tunnel_id" {
-  type    = string
-  default = ""
-
-  description = <<-EOT
-    UUID of the `qnsc-kb-production` Cloudflare Tunnel — a DIFFERENT tunnel from
-    develop's, never the same one. A tunnel maps a hostname to whichever connectors
-    hold its token, so sharing one between environments would let a develop task serve
-    production traffic.
-
-    Created out of band; put its connector token in the production `tunnel-token`
-    secret.
-  EOT
-}
 
 variable "microsoft_client_id" {
   type        = string

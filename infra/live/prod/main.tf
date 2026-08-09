@@ -111,7 +111,6 @@ module "stack" {
   secrets_recovery_window_days = 30
 
   tunnel_enabled = true
-  tunnel_id      = var.tunnel_id
 
   // ── Sizing ─────────────────────────────────────────────────────────────────
   // Larger than develop because production serves real queries, but the FLOORS are 0
