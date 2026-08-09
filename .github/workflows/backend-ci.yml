@@ -55,10 +55,19 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-interaction --no-root
 
-      # black and mypy have been dev dependencies since the project began, and nothing
-      # ran either of them. --check does not rewrite anything; it fails when a file
-      # would be reformatted.
-      - name: Format check (black)
+      # black and mypy have been dev dependencies since the project began and nothing ever
+      # ran either, so both start ADVISORY. This codebase has never been formatted, and a
+      # blocking gate would fail every PR on a whole-repo backlog that has nothing to do
+      # with the change under review.
+      #
+      # Promote to blocking after one dedicated `style: format with black` commit. Doing
+      # that reformat inside a feature branch would bury the actual change under every
+      # file in the repository, which is why it is not done here.
+      #
+      # An advisory check nobody ever promotes is decoration — this one has a specific
+      # next step, and it should be taken.
+      - name: Format check (black, advisory)
+        continue-on-error: true
         run: poetry run black --check src migrations scripts
 
       # Advisory to begin with: this codebase has never been type-checked, so a blocking
@@ -111,11 +120,16 @@ jobs:
       PYTHONPATH: .
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/qnsc_kb_test
       REDIS_URL: redis://localhost:6379/0
-      # Short-circuits the SentenceTransformer load in src/lib/embeddings.py. Without it
-      # every run downloads ~2.3 GB of bge-m3 weights to compute vectors no assertion
-      # reads. Retrieval QUALITY is measured by the RAG gate below, which uses its own
-      # fixtures.
-      EMBEDDING_MODEL: mock
+      # DO NOT set EMBEDDING_MODEL=mock here, however tempting it looks as a way to avoid
+      # downloading model weights. `get_bge_embedding` short-circuits to a zero vector on
+      # that value, which silently disables
+      # tests/unit/test_security_hardening.py::test_embedding_failure_is_not_converted_to_zero_vector
+      # — a test whose entire point is that an embedding failure must RAISE rather than
+      # return zeros, because a zero vector makes an indexing outage look healthy and
+      # contaminates retrieval with meaningless candidates.
+      #
+      # It is not needed: the tests that touch embeddings monkeypatch the model singleton,
+      # so nothing loads real weights.
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -286,7 +300,6 @@ jobs:
     timeout-minutes: 20
     env:
       PYTHONPATH: .
-      EMBEDDING_MODEL: mock
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
