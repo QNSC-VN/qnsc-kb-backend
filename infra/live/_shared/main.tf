@@ -92,12 +92,24 @@ module "ecr" {
 # Owns every qnsc-kb AWS role: per-environment deploy, ECR push, infra plan/apply.
 # Keyless — no access keys exist for CI to leak.
 #
-# v3.0.0 rather than the v2.1.0 rally still pins: v3 adds ssm:DescribeParameters to the
-# deploy role, which the shared deploy workflow's secret preflight needs to verify SSM
-# SecureString parameters were populated. It is metadata only (names and version
-# numbers, never values), and the addition is backwards compatible.
+# v3.0.1, and both parts of that version matter.
+#
+# v3 adds ssm:DescribeParameters to the deploy role, which the shared deploy workflow's
+# secret preflight needs to verify that SSM SecureString parameters were populated —
+# metadata only (names and version numbers, never values). rally still pins v2.1.0.
+#
+# v3.0.1 trusts BOTH shapes of the GitHub OIDC subject, and THIS REPOSITORY REQUIRES IT.
+# GitHub issues newer repositories an ID-augmented subject:
+#
+#   repo:QNSC-VN@297362956/qnsc-kb-backend@1312007613:pull_request
+#
+# while older ones like rally emit `repo:QNSC-VN/rally:...`. Nobody configures this — it
+# is fixed by GitHub at repository creation, and both repos report identical, default
+# settings. On v3.0.0 every job here failed with "Not authorized to perform
+# sts:AssumeRoleWithWebIdentity", which names neither the subject nor the mismatch; the
+# presented claim is only visible in CloudTrail's userIdentity.userName.
 module "iam_oidc" {
-  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/iam-oidc?ref=iam-oidc-v3.0.0"
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/iam-oidc?ref=iam-oidc-v3.0.1"
 
   product           = "qnsc-kb"
   github_org        = local.github_org
