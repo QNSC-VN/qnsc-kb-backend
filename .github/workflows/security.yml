@@ -24,6 +24,12 @@ concurrency:
 permissions:
   contents: read
   security-events: write # SARIF upload
+  # A CEILING, not a grant this workflow uses: the reusable's Trivy job declares
+  # `packages: read`, and a called workflow can only REDUCE the caller's permissions,
+  # never elevate them. Without it here GitHub rejects the whole workflow before any job
+  # runs — a `startup_failure` with no log to read, which looks like the reusable is
+  # missing rather than like a permission ceiling.
+  packages: read
 
 jobs:
   security:
