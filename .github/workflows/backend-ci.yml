@@ -326,23 +326,32 @@ jobs:
           json.dump(app.openapi(), open('openapi.json', 'w'), indent=2)
           "
 
-      # Two traps here, both of which silently produce a spec for the WRONG commit and
-      # so a diff that always reports "no breaking changes":
+      # Three traps here. The first two silently produce a spec for the WRONG commit and
+      # so a diff that always reports "no breaking changes"; the third fails the job
+      # outright on a PR that has nothing wrong with it:
       #
-      #   1. `poetry run` inside the worktree resolves a DIFFERENT virtualenv — the
-      #      worktree has its own pyproject.toml and nothing installed against it. Take
-      #      the interpreter from the environment already installed at the repo root.
-      #   2. For `python -c`, sys.path[0] is the CWD, which shadows PYTHONPATH. So the
+      #   1. For `python -c`, sys.path[0] is the CWD, which shadows PYTHONPATH. So the
       #      run has to happen from inside the worktree, not from the repo root with
       #      PYTHONPATH pointed at it.
+      #   2. The worktree has its own pyproject.toml, so the environment must be
+      #      installed against it rather than assumed.
+      #   3. main must be imported with MAIN's dependencies, not this branch's. Reusing
+      #      the root virtualenv breaks the moment a PR adds or removes a dependency that
+      #      main imports: replacing python-jose with PyJWT made `from src.api.main
+      #      import app` raise ModuleNotFoundError for a package the PR deliberately
+      #      removed, and the job failed on the BASE commit rather than on the change.
+      #
+      # Installing inside the worktree costs a couple of minutes and resolves 1–3
+      # together: poetry keys the virtualenv to the project path, so this is main's own
+      # environment, and `poetry run` from that directory is then the correct interpreter.
       - name: Generate OpenAPI spec (main)
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
-          PY=$(poetry env info --executable)
           git worktree add /tmp/base origin/main
           cd /tmp/base
-          "$PY" -c "
+          poetry install --no-interaction --no-root
+          poetry run python -c "
           import json
           from src.api.main import app
           json.dump(app.openapi(), open('/tmp/openapi-base.json', 'w'), indent=2)
