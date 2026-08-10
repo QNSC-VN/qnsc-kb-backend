@@ -72,9 +72,15 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
     """Verify signature, audience, nonce, and tenant claims before mapping."""
     unverified_header = jwt.get_unverified_header(id_token)
     # PyJWT has no get_unverified_claims(); decoding with verify_signature off is the
-    # documented equivalent, and it disables the other verifications too — which is what
-    # we want, since these claims are only used to pick the signing key and are re-read
-    # from the VERIFIED payload below.
+    # documented equivalent, and it disables the other verifications too.
+    #
+    # Reading claims before the signature is checked is unavoidable here and safe as used:
+    # `tid` decides WHICH tenant's signing keys to fetch, so it is needed before there is
+    # a key to verify with. Nothing from this dict is trusted — `_validate_id_token_metadata`
+    # only uses it to reject a token before any network call, and every claim the caller
+    # acts on (subject, email, nonce) is re-read from the VERIFIED payload below.
+    #
+    # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
     unverified_claims = jwt.decode(id_token, options={"verify_signature": False})
     kid = str(unverified_header.get("kid") or "")
     if not kid:
