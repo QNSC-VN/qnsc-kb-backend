@@ -269,13 +269,21 @@ module "ecs_cluster" {
 // of this stack must be able to apply before Cloudflare is wired up.
 module "tunnel" {
   count  = var.tunnel_enabled && var.cloudflare_account_id != "" ? 1 : 0
-  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.1.0"
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.1.1"
 
   account_id = var.cloudflare_account_id
   // One tunnel per product per environment. Sharing one across environments would let a
   // develop task serve production traffic, because a tunnel routes to whichever
   // connectors hold its token.
   name = local.name
+
+  // Without these the connector runs, reports healthy, and answers 503 to everything —
+  // "No ingress rules were defined". v0.1.1 is the first version that creates them.
+  //
+  // localhost is correct: under ECS awsvpc every container in a task shares one network
+  // namespace, so cloudflared reaches the api without any port being exposed.
+  hostname = var.api_domain
+  service  = "http://localhost:8000"
 }
 
 // The connector token, in its own secret rather than in the bundle above.
