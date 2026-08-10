@@ -176,8 +176,8 @@ module "stack" {
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
   // re-embedding every chunk, because a query and a chunk embedded by different models
   // are points in unrelated spaces.
-  embedding_model   = "text-embedding-004"
-  embedding_version = "gemini-text-embedding-004-v1"
+  embedding_model   = "gemini-embedding-001"
+  embedding_version = "gemini-embedding-001-768-v1"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id

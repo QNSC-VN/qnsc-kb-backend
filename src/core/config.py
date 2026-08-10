@@ -71,8 +71,8 @@ class Settings(BaseSettings):
     # HNSW index AT MIGRATION TIME. Changing it later needs a migration and a full
     # re-embed: a query and a chunk embedded by different models are points in unrelated
     # spaces, and their distance is meaningless rather than merely wrong.
-    EMBEDDING_MODEL: str = "text-embedding-004"
-    EMBEDDING_VERSION: str = "gemini-text-embedding-004-v1"
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
+    EMBEDDING_VERSION: str = "gemini-embedding-001-768-v1"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"
     RESTRUCTURE_ENABLED: bool = True
@@ -161,7 +161,10 @@ class Settings(BaseSettings):
                 self.EMBEDDING_DIMENSION = 384
             elif "text-embedding-3-small" in model or "ada-002" in model:
                 self.EMBEDDING_DIMENSION = 1536
-            elif "text-embedding-004" in model or "embedding-001" in model:
+            elif "gemini-embedding" in model or "text-embedding-004" in model:
+                # 768, NOT the provider's 3072 default: pgvector's HNSW index refuses to
+                # build above 2000 dimensions, and the adapter asks for this width
+                # explicitly via outputDimensionality.
                 self.EMBEDDING_DIMENSION = 768
             else:
                 self.EMBEDDING_DIMENSION = 1024

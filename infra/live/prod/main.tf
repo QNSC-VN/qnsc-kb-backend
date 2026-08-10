@@ -201,8 +201,8 @@ module "stack" {
   // Must match develop. A different model writes vectors of a different width, and even
   // at the same width the spaces are unrelated — the comparison would not error, it would
   // just return nonsense. Fixed at migration time by the pgvector column and HNSW index.
-  embedding_model   = "text-embedding-004"
-  embedding_version = "gemini-text-embedding-004-v1"
+  embedding_model   = "gemini-embedding-001"
+  embedding_version = "gemini-embedding-001-768-v1"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id

@@ -25,6 +25,7 @@ indexing outage look healthy.
 """
 from __future__ import annotations
 
+import math
 import threading
 from typing import TYPE_CHECKING, Any
 
@@ -109,9 +110,13 @@ def _hosted_embeddings(texts: list[str]) -> list[list[float]]:
                 "content": {"parts": [{"text": text}]},
                 # Explicit, because the two are NOT interchangeable: the provider embeds a
                 # question and a passage differently, and mixing them degrades retrieval
-                # quietly rather than visibly. Documents are embedded by the worker with
-                # RETRIEVAL_DOCUMENT; see get_embeddings_for_documents.
+                # quietly rather than visibly.
                 "taskType": "RETRIEVAL_QUERY",
+                # gemini-embedding-001 returns 3072 dimensions by default, and pgvector's
+                # HNSW index REFUSES to build above 2000 — a limit that would surface as a
+                # failed migration, not a configuration error. Ask for the width the
+                # column was actually created with.
+                "outputDimensionality": settings.EMBEDDING_DIMENSION,
             }
             for text in texts
         ]
@@ -131,7 +136,22 @@ def _hosted_embeddings(texts: list[str]) -> list[list[float]]:
         raise RuntimeError(
             f"embedding API returned {len(vectors)} vectors for {len(texts)} inputs"
         )
-    return vectors
+    # Truncated vectors come back UNNORMALISED — measured L2 of 0.586 at 768 dimensions,
+    # where the full-width 3072 output is unit length. The local model this replaced
+    # always normalised (`normalize_embeddings=True`), and the tuned constants
+    # VECTOR_DISTANCE_THRESHOLD and RAG_MIN_RELEVANCE_SCORE were chosen against unit
+    # vectors, so normalising here keeps the invariant the rest of the pipeline assumes
+    # rather than quietly shifting every score.
+    return [_normalise(v) for v in vectors]
+
+
+def _normalise(vector: list[float]) -> list[float]:
+    norm = math.sqrt(sum(x * x for x in vector))
+    if norm == 0:
+        # Not recoverable, and not something to paper over with a zero vector: an
+        # all-zero embedding matches nothing and poisons retrieval.
+        raise RuntimeError("embedding API returned a zero vector")
+    return [x / norm for x in vector]
 
 
 # ── Public surface ───────────────────────────────────────────────────────────
