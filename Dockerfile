@@ -44,7 +44,13 @@ FROM python:3.11-slim AS runtime
 WORKDIR /app
 
 ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PYTHONDONTWRITEBYTECODE=1 \
+    # /app must be importable, not merely the working directory. Running a script BY
+    # PATH (`python scripts/bootstrap_db_role.py`) puts /app/scripts on sys.path — not
+    # /app — so `import src.core.config` raises ModuleNotFoundError. uvicorn and celery
+    # hide this because they import by module name from the CWD, so the failure appears
+    # only in the migrator, only when deployed.
+    PYTHONPATH=/app
 
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
