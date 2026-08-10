@@ -15,4 +15,4 @@ permissions:
 
 jobs:
   comment:
-    uses: QNSC-VN/qnsc-ci/.github/workflows/release-commenter.yml@v1.7.0
+    uses: QNSC-VN/qnsc-ci/.github/workflows/release-commenter.yml@v1.7.1

@@ -33,7 +33,7 @@ permissions:
 
 jobs:
   security:
-    uses: QNSC-VN/qnsc-ci/.github/workflows/security.yml@v1.7.0
+    uses: QNSC-VN/qnsc-ci/.github/workflows/security.yml@v1.7.1
     with:
       product: qnsc-kb
       image_target: api
