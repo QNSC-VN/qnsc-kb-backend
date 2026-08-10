@@ -91,8 +91,8 @@ async def initialize_resources() -> None:
     for attempt in range(1, 4):
         try:
             # PostgreSQL can need a few seconds to finish crash recovery after
-            # Docker restarts. Schema bootstrap also performs several ALTERs,
-            # so a 10-second global timeout is too aggressive for cold starts.
+            # Docker restarts. Migrations run in the deployment entrypoint;
+            # application startup only verifies/bootstraps runtime data.
             await asyncio.wait_for(init_db(), timeout=60)
             logger.info("Database initialized successfully", attempt=attempt)
             await reconcile_published_indexes()

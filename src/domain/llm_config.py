@@ -13,7 +13,7 @@ from src.models.ops import LLMProviderConfig
 SUPPORTED_PROVIDERS = {"openai", "glm", "groq"}
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1/chat/completions",
-    "glm": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "glm": "https://api.z.ai/api/coding/paas/v4/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
 }
 
@@ -41,24 +41,6 @@ def decrypt_api_key(value: str | None) -> str | None:
     return decrypt_secret(value)
 
 
-def _environment_config() -> RuntimeLLMConfig | None:
-    provider = (settings.LLM_PROVIDER or "").strip().lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        if settings.OPENAI_API_KEY and settings.OPENAI_API_KEY != "mock":
-            provider = "openai"
-        elif settings.GROQ_API_KEY and settings.GROQ_API_KEY != "mock":
-            provider = "groq"
-        else:
-            return None
-    api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.GROQ_API_KEY if provider == "groq" else settings.GLM_API_KEY
-    if not api_key or api_key == "mock":
-        return None
-    model = settings.LLM_MODEL
-    if provider == "groq" and model == "gpt-4o":
-        model = "llama-3.3-70b-versatile"
-    return RuntimeLLMConfig(provider, model, (settings.LLM_BASE_URL or DEFAULT_BASE_URLS[provider]).rstrip("/"), api_key)
-
-
 def set_runtime_config(config: RuntimeLLMConfig | None) -> None:
     global _runtime_config, _runtime_config_loaded
     _runtime_config = config
@@ -66,14 +48,16 @@ def set_runtime_config(config: RuntimeLLMConfig | None) -> None:
 
 
 def get_runtime_config() -> RuntimeLLMConfig | None:
-    return _runtime_config if _runtime_config_loaded else _environment_config()
+    # The workspace provider is an administrator-managed database setting.
+    # Never fall back to API keys or model names from the process environment.
+    return _runtime_config if _runtime_config_loaded else None
 
 
 async def load_runtime_config(db: AsyncSession) -> None:
     result = await db.execute(select(LLMProviderConfig).where(LLMProviderConfig.config_key == "workspace"))
     row = result.scalar_one_or_none()
     if row is None:
-        set_runtime_config(_environment_config())
+        set_runtime_config(None)
         return
     key = decrypt_api_key(row.encrypted_api_key)
     set_runtime_config(RuntimeLLMConfig(row.provider, row.model, row.base_url.rstrip("/"), key) if row.enabled and key else None)
@@ -84,10 +68,10 @@ def public_config(row: LLMProviderConfig | None) -> dict:
     if row is None:
         return {
             "configured": runtime is not None,
-            "source": "environment" if runtime else "none",
-            "enabled": runtime is not None,
+            "source": "admin" if runtime else "none",
+            "enabled": bool(runtime),
             "provider": runtime.provider if runtime else "openai",
-            "model": runtime.model if runtime else settings.LLM_MODEL,
+            "model": runtime.model if runtime else "gpt-4o-mini",
             "base_url": runtime.base_url if runtime else DEFAULT_BASE_URLS["openai"],
             "allow_custom_base_url": settings.LLM_ALLOW_CUSTOM_BASE_URL,
             "api_key_configured": runtime is not None,

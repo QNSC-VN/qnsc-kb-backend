@@ -1,0 +1,6 @@
+[
+  {"name": "staff", "email": "kb-staff@acme.test"},
+  {"name": "reviewer", "email": "kb-reviewer@acme.test"},
+  {"name": "ceo", "email": "kb-ceo@acme.test"},
+  {"name": "admin", "email": "kb-admin@acme.test"}
+]

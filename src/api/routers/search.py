@@ -19,6 +19,7 @@ async def search(
     type_: str | None = Query(None, alias="type", max_length=50),
     status: str | None = Query(None, max_length=30),
     language: str | None = Query(None, max_length=20),
+    tag: str | None = Query(None, max_length=50),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
     limit: int = Query(5, ge=1, le=20),
@@ -40,6 +41,8 @@ async def search(
         filters["status"] = status
     if language:
         filters["language"] = language
+    if tag:
+        filters["tag"] = tag.strip().lower()
     if date_from:
         filters["date_from"] = date_from
     if date_to:

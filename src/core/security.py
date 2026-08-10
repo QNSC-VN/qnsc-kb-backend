@@ -7,16 +7,21 @@ if not hasattr(bcrypt, "__about__"):
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from jose import jwt
-from passlib.context import CryptContext
 from src.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    # Use the installed bcrypt library directly. Passlib's legacy bcrypt
+    # backend performs a long-password compatibility probe that newer bcrypt
+    # releases reject, which can break every managed-user creation request.
+    if len(password.encode("utf-8")) > 72:
+        raise ValueError("password cannot be longer than 72 UTF-8 bytes")
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 def create_access_token(subject: str | Any, expires_delta: timedelta | None = None, auth_version: int = 0) -> str:
     if expires_delta:

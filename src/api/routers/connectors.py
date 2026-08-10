@@ -14,14 +14,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.api.deps import SessionLocal, get_db, get_current_user, require_permission, set_database_context
 from src.models import User
-from src.models.user import AccessGroup
+from src.models.governance import AuditLog, PendingDraft
+from src.models.user import AccessGroup, ExternalIdentity
 from src.models.ops import Connector, ConnectorJob
-from src.models.connectors import ExternalGroupMapping, SourceScope, SyncCursor, WebhookSubscription
+from src.models.connectors import ExternalAclPrincipal, ExternalDocument, ExternalGroupMapping, PermissionSnapshot, SourceScope, SyncCursor, WebhookSubscription
+from src.repositories.user import UserRepository
 from src.domain.connectors import sync_local_folder
 from src.core.config import settings
 from src.domain.rbac import AuthorizationService
 from src.domain.connector_adapters import adapter_for, ConnectorProviderError, SharePointAdapter, GoogleDriveAdapter
 from src.core.secrets import encrypt_secret
+from src.domain.departments import resolve_active_departments
 
 router = APIRouter()
 
@@ -34,6 +37,7 @@ class ConnectorCreate(BaseModel):
 
 class ConnectorUpdate(BaseModel):
     sync_mode: Literal["manual", "daily", "on_update"] | None = None
+    department_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
 
 
 SYNC_MODES = {"manual", "daily", "on_update"}
@@ -77,6 +81,17 @@ def _safe_connector_config(config: dict[str, Any]) -> dict[str, Any]:
     inspect(config)
     return json.loads(encoded)
 
+
+async def _apply_connector_departments(db: AsyncSession, connector: Connector, config: dict[str, Any], department_ids: list[uuid.UUID] | None) -> dict[str, Any]:
+    """Store canonical default routing for drafts created by this connector."""
+    if department_ids is None:
+        return config
+    departments = await resolve_active_departments(db, connector.company_domain, department_ids, required=False)
+    next_config = {**config}
+    next_config["department_ids"] = [str(department.id) for department in departments]
+    next_config["department_names"] = [department.name for department in departments]
+    return next_config
+
 def _response(connector: Connector) -> dict[str, Any]:
     config = connector.config_json or {}
     return {
@@ -87,6 +102,47 @@ def _response(connector: Connector) -> dict[str, Any]:
         "path": config.get("path"),
         "sync_mode": config.get("sync_mode", "manual" if connector.system == "local_folder" else "daily"),
         "webhook_enabled": bool(config.get("webhook_enabled")),
+        "department_ids": [str(item) for item in config.get("department_ids", [])],
+        "department_names": [str(item) for item in config.get("department_names", [])],
+    }
+
+
+def _job_response(job: ConnectorJob, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "id": str(job.id),
+        "status": job.status,
+        "attempts": job.attempts,
+        "last_error": job.last_error,
+        "created_at": job.created_at,
+        "completed_at": job.completed_at,
+        "summary": summary if summary is not None else (job.summary_json or {}),
+    }
+
+
+async def _legacy_job_summary(db: AsyncSession, job: ConnectorJob) -> dict[str, Any] | None:
+    """Give pre-summary jobs a useful best-effort file list after migration."""
+    if job.summary_json or job.status != "completed":
+        return job.summary_json
+    stmt = select(ExternalDocument).where(
+        ExternalDocument.connector_id == job.connector_id,
+        ExternalDocument.mime_type.is_not(None),
+        ExternalDocument.created_at >= job.created_at,
+    )
+    if job.completed_at:
+        stmt = stmt.where(ExternalDocument.created_at <= job.completed_at)
+    documents = (await db.execute(stmt.order_by(ExternalDocument.created_at))).scalars().all()
+    if not documents:
+        return None
+    return {
+        "changes_seen": len(documents),
+        "files_seen": len(documents),
+        "imported": len(documents),
+        "updated": 0,
+        "deleted": 0,
+        "unchanged": 0,
+        "permissions_updated": 0,
+        "items": [{"name": document.name, "action": "processed", "web_url": document.web_url} for document in documents[:200]],
+        "legacy_backfill": True,
     }
 
 
@@ -97,6 +153,14 @@ def _can_complete_oauth(initiator: User | None, connector: Connector) -> bool:
         and initiator.company_domain == connector.company_domain
         and AuthorizationService.has_permission(initiator, "connector.manage", requested_scope="company")
     )
+
+
+async def _connector_for_user(db: AsyncSession, connector_id: uuid.UUID, current_user: User) -> Connector | None:
+    """Load a connector with the caller's tenant scope in the SQL query."""
+    stmt = select(Connector).where(Connector.id == connector_id)
+    if not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
+        stmt = stmt.where(Connector.company_domain == current_user.company_domain)
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 @router.get("")
 async def list_connectors(
@@ -125,6 +189,14 @@ async def create_connector(
     if sync_mode not in SYNC_MODES:
         raise HTTPException(status_code=422, detail="Sync mode must be manual, daily, or on_update")
     safe_config["sync_mode"] = sync_mode
+    raw_department_ids = safe_config.pop("department_ids", None)
+    if raw_department_ids is not None:
+        try:
+            department_ids = [uuid.UUID(str(item)) for item in raw_department_ids]
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="Connector departments must be valid department IDs") from exc
+        temporary_connector = Connector(company_domain=current_user.company_domain)
+        safe_config = await _apply_connector_departments(db, temporary_connector, safe_config, department_ids)
     if folder:
         safe_config["path"] = str(folder)
     connector = Connector(name=request.name, system=request.system, company_domain=current_user.company_domain, created_by=current_user.id, config_json=safe_config)
@@ -141,15 +213,31 @@ async def update_connector(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    connector = await db.get(Connector, connector_id)
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     if request.sync_mode is not None:
         if request.sync_mode not in SYNC_MODES:
             raise HTTPException(status_code=422, detail="Sync mode must be manual, daily, or on_update")
         connector.config_json = {**(connector.config_json or {}), "sync_mode": request.sync_mode}
+    if request.department_ids is not None:
+        connector.config_json = await _apply_connector_departments(db, connector, connector.config_json or {}, request.department_ids)
+        department_ids = set(connector.config_json.get("department_ids", []))
+        department_names = connector.config_json.get("department_names", [])
+        primary_department = department_names[0] if department_names else None
+        pending_drafts = (await db.execute(
+            select(PendingDraft)
+            .join(ExternalDocument, PendingDraft.external_document_id == ExternalDocument.id)
+            .where(
+                ExternalDocument.connector_id == connector.id,
+                PendingDraft.status == "pending",
+                PendingDraft.dept.is_(None),
+            )
+        )).scalars().all()
+        for draft in pending_drafts:
+            metadata = {**(draft.content_metadata or {}), "department_ids": list(department_ids), "department_names": department_names, "submission_kind": "connector_import"}
+            draft.dept = primary_department
+            draft.content_metadata = metadata
     await db.commit()
     await db.refresh(connector)
     return _response(connector)
@@ -178,7 +266,12 @@ async def oauth_callback_entry(
         return _oauth_frontend_redirect()
     try:
         result = await oauth_callback(code=code, state=state, db=db)
-    except HTTPException:
+    except Exception as exc:
+        # OAuth must always return the user to the application. Provider,
+        # database, or callback-state failures should never leave the browser
+        # on a generic 500 page.
+        import structlog
+        structlog.get_logger().exception("Connector OAuth callback failed", error=str(exc))
         return _oauth_frontend_redirect()
     return _oauth_frontend_redirect(connector_id=result["connector_id"], success=True)
 
@@ -189,11 +282,9 @@ async def start_oauth(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, str]:
-    connector = (await db.execute(select(Connector).where(Connector.id == connector_id))).scalar_one_or_none()
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     if connector.system == "local_folder":
         raise HTTPException(status_code=422, detail="Local folders do not require OAuth")
     if connector.system == "sharepoint" and not all((settings.MICROSOFT_CLIENT_ID, settings.MICROSOFT_CLIENT_SECRET, settings.MICROSOFT_REDIRECT_URI)):
@@ -275,11 +366,9 @@ async def discover_scopes(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    connector = (await db.execute(select(Connector).where(Connector.id == connector_id))).scalar_one_or_none()
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     try:
         scopes = await adapter_for(connector).discover_scopes()
     except ConnectorProviderError as exc:
@@ -294,21 +383,25 @@ async def select_scopes(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    connector = (await db.execute(select(Connector).where(Connector.id == connector_id))).scalar_one_or_none()
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     selected = set(request.scope_ids)
     existing = (await db.execute(select(SourceScope).where(SourceScope.connector_id == connector.id))).scalars().all()
+    discovered = {str(item["external_scope_id"]): item for item in await adapter_for(connector).discover_scopes()}
     for scope in existing:
         scope.selected = scope.external_scope_id in selected
+        item = discovered.get(scope.external_scope_id)
+        if item:
+            scope.scope_type = item["scope_type"]
+            scope.display_name = item["display_name"]
+            scope.config_json = item.get("config")
     known = {scope.external_scope_id for scope in existing}
-    for item in await adapter_for(connector).discover_scopes():
+    for item in discovered.values():
         if item["external_scope_id"] in selected and item["external_scope_id"] not in known:
             db.add(SourceScope(connector_id=connector.id, external_scope_id=item["external_scope_id"], scope_type=item["scope_type"], display_name=item["display_name"], selected=True, config_json=item.get("config")))
     await db.commit()
-    return [{"external_scope_id": scope.external_scope_id, "display_name": scope.display_name, "scope_type": scope.scope_type, "selected": scope.selected} for scope in (await db.execute(select(SourceScope).where(SourceScope.connector_id == connector.id))).scalars().all()]
+    return [{"external_scope_id": scope.external_scope_id, "display_name": scope.display_name, "scope_type": scope.scope_type, "selected": scope.selected, "config": scope.config_json or {}} for scope in (await db.execute(select(SourceScope).where(SourceScope.connector_id == connector.id))).scalars().all()]
 
 
 @router.post("/{connector_id}/webhooks/subscribe")
@@ -317,11 +410,9 @@ async def subscribe_webhooks(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    connector = await db.get(Connector, connector_id)
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     if connector.system == "local_folder":
         raise HTTPException(status_code=422, detail="Local folders do not support webhooks")
     if not settings.CONNECTOR_WEBHOOK_BASE_URL:
@@ -347,13 +438,91 @@ async def list_group_mappings(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict[str, Any]]:
-    connector = await db.get(Connector, connector_id)
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
-    mappings = (await db.execute(select(ExternalGroupMapping, AccessGroup.name).join(AccessGroup, AccessGroup.id == ExternalGroupMapping.access_group_id).where(ExternalGroupMapping.connector_id == connector.id))).all()
+    mappings = (await db.execute(select(ExternalGroupMapping, AccessGroup.name).join(AccessGroup, AccessGroup.id == ExternalGroupMapping.access_group_id).where(
+        ExternalGroupMapping.connector_id == connector.id,
+        AccessGroup.company_domain == connector.company_domain,
+    ))).all()
     return [{"external_group_id": mapping.external_group_id, "external_group_name": mapping.external_group_name, "access_group_id": str(mapping.access_group_id), "access_group_name": name, "active": mapping.active} for mapping, name in mappings]
+
+
+@router.get("/{connector_id}/acl-principals")
+async def list_acl_principals(
+    connector_id: uuid.UUID,
+    current_user: User = Depends(require_permission("connector.manage")),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    """List observed provider principals and their current mapping state.
+
+    The connector lookup supplies the tenant boundary before any provider ACL
+    row is returned. Unmapped principals are deliberately visible only to
+    connector managers so they can make an explicit, audited mapping choice.
+    """
+    connector = await _connector_for_user(db, connector_id, current_user)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    mapping_rows = (await db.execute(select(ExternalGroupMapping, AccessGroup.name).join(
+        AccessGroup, AccessGroup.id == ExternalGroupMapping.access_group_id,
+    ).where(
+        ExternalGroupMapping.connector_id == connector.id,
+        AccessGroup.company_domain == connector.company_domain,
+    ))).all()
+    group_mappings = {
+        mapping.external_group_id: {
+            "external_group_name": mapping.external_group_name,
+            "access_group_id": str(mapping.access_group_id),
+            "access_group_name": name,
+            "active": mapping.active,
+        }
+        for mapping, name in mapping_rows
+    }
+
+    principals = (await db.execute(
+        select(ExternalAclPrincipal)
+        .join(PermissionSnapshot, PermissionSnapshot.id == ExternalAclPrincipal.permission_snapshot_id)
+        .join(ExternalDocument, ExternalDocument.id == PermissionSnapshot.external_document_id)
+        .where(
+            ExternalDocument.connector_id == connector.id,
+            ExternalDocument.state != "deleted",
+            PermissionSnapshot.active.is_(True),
+        )
+    )).scalars().all()
+    by_principal: dict[tuple[str, str], dict[str, Any]] = {}
+    for principal in principals:
+        key = (principal.principal_type, principal.principal_id)
+        entry = by_principal.setdefault(key, {"principal_type": principal.principal_type, "principal_id": principal.principal_id, "roles": set()})
+        if principal.role:
+            entry["roles"].update(item.strip() for item in principal.role.split(",") if item.strip())
+
+    user_subjects = [principal_id for principal_type, principal_id in by_principal if principal_type in {"user", "siteUser"}]
+    identities = (await db.execute(
+        select(ExternalIdentity).join(User, User.id == ExternalIdentity.user_id).where(
+            ExternalIdentity.provider == "microsoft_entra",
+            ExternalIdentity.subject.in_(user_subjects),
+            User.company_domain == connector.company_domain,
+        )
+    )).scalars().all() if user_subjects else []
+    mapped_users = {str(identity.subject): str(identity.user_id) for identity in identities}
+
+    response: list[dict[str, Any]] = []
+    for (principal_type, principal_id), entry in sorted(by_principal.items()):
+        mapping = group_mappings.get(principal_id) if principal_type in {"group", "siteGroup"} else None
+        mapped_user_id = mapped_users.get(principal_id) if principal_type in {"user", "siteUser"} else None
+        active_mapping = mapping and mapping["active"]
+        response.append({
+            "principal_type": principal_type,
+            "principal_id": principal_id,
+            "roles": sorted(entry["roles"]),
+            "mapping_status": "mapped" if active_mapping or mapped_user_id else "unmapped",
+            "external_group_name": mapping["external_group_name"] if mapping else None,
+            "access_group_id": mapping["access_group_id"] if active_mapping else None,
+            "access_group_name": mapping["access_group_name"] if active_mapping else None,
+            "internal_user_id": mapped_user_id,
+        })
+    return response
 
 
 @router.put("/{connector_id}/group-mappings/{external_group_id}")
@@ -364,14 +533,15 @@ async def set_group_mapping(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    connector = await db.get(Connector, connector_id)
-    group = await db.get(AccessGroup, request.access_group_id)
-    if not connector or not group:
+    connector = await _connector_for_user(db, connector_id, current_user)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    group = (await db.execute(select(AccessGroup).where(
+        AccessGroup.id == request.access_group_id,
+        AccessGroup.company_domain == connector.company_domain,
+    ))).scalar_one_or_none()
+    if not group:
         raise HTTPException(status_code=404, detail="Connector or access group not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
-    if group.company_domain != connector.company_domain:
-        raise HTTPException(status_code=422, detail="An access group must belong to the connector's company")
     mapping = (await db.execute(select(ExternalGroupMapping).where(ExternalGroupMapping.connector_id == connector.id, ExternalGroupMapping.external_group_id == external_group_id))).scalar_one_or_none()
     if mapping is None:
         mapping = ExternalGroupMapping(connector_id=connector.id, external_group_id=external_group_id, external_group_name=request.external_group_name, access_group_id=group.id, active=True)
@@ -380,8 +550,22 @@ async def set_group_mapping(
         mapping.external_group_name = request.external_group_name or mapping.external_group_name
         mapping.access_group_id = group.id
         mapping.active = True
-    await db.commit()
-    return {"external_group_id": mapping.external_group_id, "access_group_id": str(mapping.access_group_id), "active": mapping.active}
+    try:
+        await db.flush()
+        from src.domain.cloud_sync import reconcile_connector_acl_mappings, _record_permission_change_audits
+        changed_article_ids = await reconcile_connector_acl_mappings(db, connector)
+        _record_permission_change_audits(db, changed_article_ids, current_user.id)
+        db.add(AuditLog(user_id=current_user.id, action="connector_permission_mapping", target_type="connector", target_id=str(connector.id), outcome="success"))
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        db.add(AuditLog(user_id=current_user.id, action="connector_permission_mapping", target_type="connector", target_id=str(connector.id), outcome="failure"))
+        await db.commit()
+        raise
+    from src.domain.events import event_bus
+    for article_id in changed_article_ids:
+        await event_bus.publish("PermissionChanged", {"article_id": str(article_id)})
+    return {"external_group_id": mapping.external_group_id, "access_group_id": str(mapping.access_group_id), "active": mapping.active, "articles_reconciled": len(changed_article_ids)}
 
 
 @router.delete("/{connector_id}/group-mappings/{external_group_id}", status_code=204)
@@ -391,15 +575,27 @@ async def delete_group_mapping(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> None:
-    connector = await db.get(Connector, connector_id)
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if connector.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global"):
-        raise HTTPException(status_code=403, detail="Connector is outside your company")
     mapping = (await db.execute(select(ExternalGroupMapping).where(ExternalGroupMapping.connector_id == connector.id, ExternalGroupMapping.external_group_id == external_group_id))).scalar_one_or_none()
     if mapping:
         mapping.active = False
-        await db.commit()
+        try:
+            await db.flush()
+            from src.domain.cloud_sync import reconcile_connector_acl_mappings, _record_permission_change_audits
+            changed_article_ids = await reconcile_connector_acl_mappings(db, connector)
+            _record_permission_change_audits(db, changed_article_ids, current_user.id)
+            db.add(AuditLog(user_id=current_user.id, action="connector_permission_mapping", target_type="connector", target_id=str(connector.id), outcome="success"))
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            db.add(AuditLog(user_id=current_user.id, action="connector_permission_mapping", target_type="connector", target_id=str(connector.id), outcome="failure"))
+            await db.commit()
+            raise
+        from src.domain.events import event_bus
+        for article_id in changed_article_ids:
+            await event_bus.publish("PermissionChanged", {"article_id": str(article_id)})
 
 @router.post("/{connector_id}/sync")
 async def sync_connector(
@@ -407,22 +603,56 @@ async def sync_connector(
     current_user: User = Depends(require_permission("connector.manage")),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    connector = (await db.execute(select(Connector).where(Connector.id == connector_id))).scalar_one_or_none()
+    connector = await _connector_for_user(db, connector_id, current_user)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
-    if not AuthorizationService.has_permission(current_user, "connector.manage", requested_scope="global") and connector.company_domain != current_user.company_domain:
-        raise HTTPException(status_code=403, detail="CEOs can only sync their company connectors")
     if connector.system != "local_folder":
         if not connector.oauth_access_token and not connector.oauth_refresh_token:
             raise HTTPException(status_code=409, detail="Authorize the connector before syncing")
         from src.workers.tasks import sync_cloud_connector_task
-        job = ConnectorJob(connector_id=connector.id, status="queued", attempts=0)
+        active_job = (await db.execute(
+            select(ConnectorJob)
+            .where(ConnectorJob.connector_id == connector.id, ConnectorJob.status.in_(["queued", "running"]))
+            .order_by(ConnectorJob.created_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if active_job and active_job.status == "queued" and active_job.created_at and active_job.created_at < datetime.utcnow() - timedelta(minutes=10):
+            active_job.status = "failed"
+            active_job.last_error = "Sync job expired before the worker started"
+            active_job.completed_at = datetime.utcnow()
+            await db.commit()
+            active_job = None
+        if active_job:
+            return {"connector_id": str(connector.id), "job_id": str(active_job.id), "status": active_job.status, "last_sync": connector.last_sync, "already_running": True}
+        job = ConnectorJob(connector_id=connector.id, requested_by=current_user.id, status="queued", attempts=0)
         db.add(job)
         await db.commit()
         sync_cloud_connector_task.delay(str(connector.id), str(job.id))
         return {"connector_id": str(connector.id), "job_id": str(job.id), "status": "queued", "last_sync": connector.last_sync}
-    job = await sync_local_folder(db, connector)
+    job = await sync_local_folder(db, connector, current_user.id)
     return {"connector_id": str(connector.id), "job_id": str(job.id), "status": job.status, "last_sync": connector.last_sync}
+
+
+@router.get("/{connector_id}/jobs")
+async def list_connector_jobs(
+    connector_id: uuid.UUID,
+    limit: int = Query(default=10, ge=1, le=50),
+    current_user: User = Depends(require_permission("connector.manage")),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict[str, Any]]:
+    connector = await _connector_for_user(db, connector_id, current_user)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    jobs = (await db.execute(
+        select(ConnectorJob)
+        .where(ConnectorJob.connector_id == connector.id)
+        .order_by(ConnectorJob.created_at.desc())
+        .limit(limit)
+    )).scalars().all()
+    result = []
+    for job in jobs:
+        result.append(_job_response(job, await _legacy_job_summary(db, job)))
+    return result
 
 
 async def _enqueue_webhook(request: Request, provider: str) -> Response:

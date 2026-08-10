@@ -1,6 +1,6 @@
 import uuid
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from fastapi import APIRouter, Body, Depends, status, HTTPException, Query, Request, Response, Cookie
 from fastapi.security import OAuth2PasswordRequestForm
@@ -14,6 +14,7 @@ from src.core.config import settings
 from src.repositories.audit import AuditRepository
 from src.models.rbac import Permission, Role, RolePermission
 from src.models.user import AccessGroup, Department, DepartmentManager, User, user_departments
+from src.models.user import ExternalIdentity
 from src.models.article import Article, article_departments
 from src.models.chunk import ArticleChunk
 from src.models.governance import Gap, PendingDraft
@@ -22,6 +23,7 @@ from src.models.sessions import RefreshSession
 from src.domain.rbac import AuthorizationService, SCOPES, bootstrap_rbac
 from src.domain.departments import resolve_active_department, normalize_department_name, lock_company_access_groups
 from src.core.rate_limit import auth_rate_limiter
+from src.domain import entra_auth
 from sqlalchemy import delete, select, func, update
 from sqlalchemy.orm import selectinload
 
@@ -78,7 +80,7 @@ class TokenResponse(BaseModel):
 class ManagedUserCreate(BaseModel):
     email: EmailStr
     name: str = Field(min_length=1, max_length=150)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=12, max_length=72)
     dept: str | None = Field(default=None, max_length=100)
     department_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
     role: str = Field(default="Staff", min_length=1, max_length=100)
@@ -91,7 +93,7 @@ class ManagedUserUpdate(BaseModel):
     dept: str | None = Field(default=None, max_length=100)
     department_ids: list[uuid.UUID] | None = Field(default=None, max_length=50)
     role: str | None = Field(default=None, min_length=1, max_length=100)
-    password: str | None = Field(default=None, min_length=12, max_length=128)
+    password: str | None = Field(default=None, min_length=12, max_length=72)
     email: EmailStr | None = None
     active: bool | None = None
     role_ids: list[uuid.UUID] | None = Field(default=None, min_length=1, max_length=20)
@@ -329,9 +331,8 @@ async def list_users(
     current_user: Any = Depends(require_permission("user.read")),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    users = await UserRepository(db).list_users(offset=offset, limit=limit)
-    can_manage_globally = AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global")
-    return [_user_response(user) for user in users if can_manage_globally or user.company_domain == current_user.company_domain]
+    users = await UserRepository(db).list_users(offset=offset, limit=limit, viewer=current_user)
+    return [_user_response(user) for user in users]
 
 
 @router.get("/groups")
@@ -519,11 +520,18 @@ async def create_access_group(payload: AccessGroupInput, current_user: Any = Dep
 
 @router.put("/groups/{group_id}/members")
 async def replace_access_group_members(group_id: uuid.UUID, payload: AccessGroupMembersInput, current_user: Any = Depends(require_permission("user.manage")), db: AsyncSession = Depends(get_db)) -> Any:
-    group = (await db.execute(select(AccessGroup).where(AccessGroup.id == group_id))).scalar_one_or_none()
-    if not group or (group.company_domain != current_user.company_domain and not AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global")):
+    can_manage_globally = AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global")
+    group = await UserRepository(db).get_group_by_id(
+        group_id,
+        company_domain=None if can_manage_globally else current_user.company_domain,
+    )
+    if not group:
         raise HTTPException(status_code=404, detail="Access group not found")
-    users = (await db.execute(select(User).where(User.id.in_(set(payload.user_ids))))).scalars().all()
-    if len(users) != len(set(payload.user_ids)) or any(user.company_domain != group.company_domain for user in users):
+    users = await UserRepository(db).get_by_ids(
+        list(set(payload.user_ids)),
+        company_domain=group.company_domain,
+    )
+    if len(users) != len(set(payload.user_ids)):
         raise HTTPException(status_code=422, detail="Every group member must be in the same company")
     group.users = list(users)
     await db.commit()
@@ -552,7 +560,10 @@ async def create_managed_user(
     requested_roles: list[Role] | None = None
     if user_in.role_ids is not None:
         requested_roles = list((await db.execute(
-            select(Role).where(Role.id.in_(user_in.role_ids))
+            select(Role).where(
+                Role.id.in_(user_in.role_ids),
+                (Role.company_domain == domain) | Role.company_domain.is_(None),
+            )
             .options(selectinload(Role.permissions).selectinload(RolePermission.permission))
         )).scalars().all())
         if len(requested_roles) != len(set(user_in.role_ids)) or any(role.company_domain not in (None, domain) for role in requested_roles):
@@ -600,7 +611,7 @@ async def update_managed_user(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     repo = UserRepository(db)
-    user = await repo.get_by_id(user_id)
+    user = await repo.get_by_id(user_id, viewer=current_user)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global") and user.company_domain != current_user.company_domain:
@@ -634,7 +645,10 @@ async def update_managed_user(
             await _set_primary_role(db, user, user_in.role)
     if user_in.role_ids is not None:
         roles = (await db.execute(
-            select(Role).where(Role.id.in_(user_in.role_ids))
+            select(Role).where(
+                Role.id.in_(user_in.role_ids),
+                (Role.company_domain == user.company_domain) | Role.company_domain.is_(None),
+            )
             .options(selectinload(Role.permissions).selectinload(RolePermission.permission))
         )).scalars().all()
         if any(role.company_domain not in (None, user.company_domain) for role in roles):
@@ -694,7 +708,7 @@ async def deactivate_user(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     repo = UserRepository(db)
-    user = await repo.get_by_id(user_id)
+    user = await repo.get_by_id(user_id, viewer=current_user)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global") and user.company_domain != current_user.company_domain:
@@ -722,15 +736,16 @@ async def assign_company_ceo(
     if not _is_global_user_manager(current_user):
         raise HTTPException(status_code=403, detail="Only global user managers can assign a company CEO")
     repo = UserRepository(db)
-    users = [user for user in await repo.list_users() if user.company_domain == company_domain.lower()]
-    target = next((user for user in users if user.id == user_id), None)
+    users = await repo.list_users(viewer=current_user)
+    company_users = [user for user in users if user.company_domain == company_domain.lower()]
+    target = next((user for user in company_users if user.id == user_id), None)
     if not target:
         raise HTTPException(status_code=404, detail="Employee not found in this company")
     if not target.active:
         raise HTTPException(status_code=422, detail="A deactivated employee cannot be assigned as CEO")
     ceo_role = await _system_role(db, "CEO", target.company_domain)
     staff_role = await _system_role(db, "Staff", target.company_domain)
-    for user in users:
+    for user in company_users:
         if (user.role == "CEO" or any(role.name == "CEO" for role in user.roles)) and user.id != target.id:
             user.role = "Staff"
             user.roles = [role for role in user.roles if role.name != "CEO"] or [staff_role]
@@ -796,10 +811,13 @@ async def create_role(payload: RoleCreate, current_user: Any = Depends(require_p
 
 @router.patch("/roles/{role_id}")
 async def update_role(role_id: uuid.UUID, payload: RoleUpdate, current_user: Any = Depends(require_permission("role.manage")), db: AsyncSession = Depends(get_db)) -> Any:
-    role = (await db.execute(select(Role).where(Role.id == role_id).options(selectinload(Role.permissions).selectinload(RolePermission.permission)))).scalar_one_or_none()
+    can_manage_globally = AuthorizationService.has_permission(current_user, "role.manage", requested_scope="global")
+    role_stmt = select(Role).where(Role.id == role_id)
+    if not can_manage_globally:
+        role_stmt = role_stmt.where(Role.company_domain == current_user.company_domain)
+    role = (await db.execute(role_stmt.options(selectinload(Role.permissions).selectinload(RolePermission.permission)))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
-    can_manage_globally = AuthorizationService.has_permission(current_user, "role.manage", requested_scope="global")
     # Global roles are shared by every company.  Letting a company-scoped
     # manager rename, deactivate, or otherwise edit one would change another
     # tenant's authorization model even if that manager cannot assign it.
@@ -833,12 +851,15 @@ async def update_role(role_id: uuid.UUID, payload: RoleUpdate, current_user: Any
 
 @router.delete("/roles/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_role(role_id: uuid.UUID, current_user: Any = Depends(require_permission("role.manage")), db: AsyncSession = Depends(get_db)) -> None:
-    role = (await db.execute(select(Role).where(Role.id == role_id).options(selectinload(Role.users)))).scalar_one_or_none()
+    can_manage_globally = AuthorizationService.has_permission(current_user, "role.manage", requested_scope="global")
+    role_stmt = select(Role).where(Role.id == role_id)
+    if not can_manage_globally:
+        role_stmt = role_stmt.where(Role.company_domain == current_user.company_domain)
+    role = (await db.execute(role_stmt.options(selectinload(Role.users)))).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     if role.system:
         raise HTTPException(status_code=400, detail="System roles cannot be deleted")
-    can_manage_globally = AuthorizationService.has_permission(current_user, "role.manage", requested_scope="global")
     if (role.company_domain is None and not can_manage_globally) or (
         role.company_domain is not None and role.company_domain != current_user.company_domain and not can_manage_globally
     ):
@@ -852,12 +873,15 @@ async def delete_role(role_id: uuid.UUID, current_user: Any = Depends(require_pe
 
 @router.put("/roles/{role_id}/permissions")
 async def replace_role_permissions(role_id: uuid.UUID, payload: list[RolePermissionInput] = Body(..., max_length=100), current_user: Any = Depends(require_permission("permission.manage")), db: AsyncSession = Depends(get_db)) -> Any:
-    role = (await db.execute(select(Role).where(Role.id == role_id))).scalar_one_or_none()
+    can_manage_globally = AuthorizationService.has_permission(current_user, "permission.manage", requested_scope="global")
+    role_stmt = select(Role).where(Role.id == role_id)
+    if not can_manage_globally:
+        role_stmt = role_stmt.where(Role.company_domain == current_user.company_domain)
+    role = (await db.execute(role_stmt)).scalar_one_or_none()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
     if role.system:
         raise HTTPException(status_code=400, detail="System role permissions cannot be changed")
-    can_manage_globally = AuthorizationService.has_permission(current_user, "permission.manage", requested_scope="global")
     if (role.company_domain is None and not can_manage_globally) or (
         role.company_domain is not None and role.company_domain != current_user.company_domain and not can_manage_globally
     ):
@@ -888,8 +912,8 @@ async def replace_role_permissions(role_id: uuid.UUID, payload: list[RolePermiss
 
 @router.get("/users/{user_id}/roles")
 async def get_user_roles(user_id: uuid.UUID, current_user: Any = Depends(require_permission("user.read")), db: AsyncSession = Depends(get_db)) -> Any:
-    user = await UserRepository(db).get_by_id(user_id)
-    if not user or (not AuthorizationService.has_permission(current_user, "user.read", requested_scope="global") and user.company_domain != current_user.company_domain):
+    user = await UserRepository(db).get_by_id(user_id, viewer=current_user)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return [{"id": role.id, "name": role.name, "company_domain": role.company_domain} for role in user.roles]
 
@@ -897,13 +921,16 @@ async def get_user_roles(user_id: uuid.UUID, current_user: Any = Depends(require
 @router.put("/users/{user_id}/roles")
 async def replace_user_roles(user_id: uuid.UUID, role_ids: list[uuid.UUID], current_user: Any = Depends(require_permission("user.manage")), db: AsyncSession = Depends(get_db)) -> Any:
     repo = UserRepository(db)
-    user = await repo.get_by_id(user_id)
-    if not user or (not AuthorizationService.has_permission(current_user, "user.manage", requested_scope="global") and user.company_domain != current_user.company_domain):
+    user = await repo.get_by_id(user_id, viewer=current_user)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not role_ids:
         raise HTTPException(status_code=422, detail="At least one role is required")
     roles = (await db.execute(
-        select(Role).where(Role.id.in_(role_ids))
+        select(Role).where(
+            Role.id.in_(role_ids),
+            (Role.company_domain == user.company_domain) | Role.company_domain.is_(None),
+        )
         .options(selectinload(Role.permissions).selectinload(RolePermission.permission))
     )).scalars().all()
     if len(roles) != len(set(role_ids)) or any(role.company_domain not in (None, user.company_domain) for role in roles):
@@ -1059,9 +1086,70 @@ async def read_current_user(current_user: Any = Depends(get_current_user)) -> An
 async def oidc_config() -> dict[str, object]:
     """Expose non-secret OIDC configuration for a future Entra/Workspace login UI."""
     return {
-        "enabled": bool(settings.OIDC_ISSUER_URL and settings.OIDC_CLIENT_ID and settings.OIDC_REDIRECT_URI),
+        "enabled": entra_auth.configured() or bool(settings.OIDC_ISSUER_URL and settings.OIDC_CLIENT_ID and settings.OIDC_REDIRECT_URI),
         "issuer_url": settings.OIDC_ISSUER_URL,
         "client_id": settings.OIDC_CLIENT_ID,
         "redirect_uri": settings.OIDC_REDIRECT_URI,
         "scopes": settings.OIDC_SCOPES.split(),
+        "entra_enabled": entra_auth.configured(),
     }
+
+
+@router.get("/entra/login")
+async def entra_login() -> dict[str, str]:
+    """Return the Microsoft Entra authorization URL for the login screen."""
+    if not entra_auth.configured():
+        raise HTTPException(status_code=503, detail="Microsoft Entra login is not configured")
+    nonce = entra_auth.new_nonce()
+    state = jwt.encode({"type": "entra_login", "nonce": nonce, "exp": datetime.utcnow() + timedelta(minutes=10)}, settings.SECRET_KEY, algorithm="HS256")
+    return {"authorization_url": entra_auth.authorization_url(state, nonce), "state_expires_in": "600"}
+
+
+@router.get("/entra/callback", response_model=TokenResponse, response_model_exclude_none=True)
+async def entra_callback(
+    code: str,
+    state: str,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Exchange and verify Entra claims, then link to an existing account."""
+    if not entra_auth.configured():
+        raise HTTPException(status_code=503, detail="Microsoft Entra login is not configured")
+    try:
+        state_claims = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])
+        if state_claims.get("type") != "entra_login" or not state_claims.get("nonce"):
+            raise JWTError("Invalid Entra login state")
+        tokens = await entra_auth.exchange_code(code)
+        claims = await entra_auth.verify_id_token(str(tokens.get("id_token") or ""), str(state_claims["nonce"]))
+    except (JWTError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=401, detail="Microsoft sign-in could not be verified") from exc
+    email = str(claims["email"]).lower()
+    await set_database_context(db, email.rsplit("@", 1)[1])
+    identity = (await db.execute(select(ExternalIdentity).where(
+        ExternalIdentity.provider == "microsoft_entra",
+        ExternalIdentity.subject == str(claims["subject"]),
+    ))).scalar_one_or_none()
+    user = await UserRepository(db).get_by_id(identity.user_id) if identity else await UserRepository(db).get_by_email(email)
+    if not user or not user.active:
+        raise HTTPException(status_code=403, detail="Your Microsoft account is not linked to an active internal KB account")
+    if user.email.lower() != email:
+        raise HTTPException(status_code=403, detail="The Microsoft account email does not match the linked internal account")
+    if identity is None:
+        db.add(ExternalIdentity(
+            user_id=user.id,
+            provider="microsoft_entra",
+            subject=str(claims["subject"]),
+            email=email,
+            tenant_id=str(claims.get("tid") or "")[:255] or None,
+        ))
+        await AuditRepository(db).record(user.id, "entra_identity_link", "user", str(user.id), outcome="success")
+    if not user.roles:
+        await bootstrap_rbac(db)
+        user = await UserRepository(db).get_by_id(user.id)
+    service = AuthService(UserRepository(db))
+    access = service.create_token(user)
+    refresh = service.create_refresh_token(user)
+    await _store_refresh_session(db, user, refresh)
+    await db.commit()
+    _set_auth_cookies(response, access, refresh)
+    return {"access_token": access, "token_type": "bearer", "user": _user_response(user)}

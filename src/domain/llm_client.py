@@ -50,7 +50,14 @@ def _gemini_contents(messages: list[dict[str, str]]) -> tuple[dict[str, Any] | N
     )
 
 
-def _payload(provider: Provider, messages: list[dict[str, str]], temperature: float) -> dict[str, Any]:
+def _payload(
+    provider: Provider,
+    messages: list[dict[str, str]],
+    temperature: float,
+    *,
+    thinking: bool | None = None,
+    max_tokens: int | None = None,
+) -> dict[str, Any]:
     if provider.native_gemini:
         system_instruction, contents = _gemini_contents(messages)
         payload: dict[str, Any] = {
@@ -64,7 +71,12 @@ def _payload(provider: Provider, messages: list[dict[str, str]], temperature: fl
         if system_instruction:
             payload["systemInstruction"] = system_instruction
         return payload
-    return {"model": provider.model, "messages": messages, "temperature": temperature}
+    payload = {"model": provider.model, "messages": messages, "temperature": temperature}
+    if thinking is not None and provider.name == "glm":
+        payload["thinking"] = {"type": "enabled" if thinking else "disabled"}
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
+    return payload
 
 
 def _headers(provider: Provider) -> dict[str, str]:
@@ -104,6 +116,8 @@ async def complete(
     *,
     model_override: str | None = None,
     timeout: float = 30.0,
+    thinking: bool | None = None,
+    max_tokens: int | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[str, int, str, str]:
     """Generate text and return ``(text, token_count, model, provider)``."""
@@ -115,7 +129,7 @@ async def complete(
         if provider.native_gemini and on_token:
             url = _gemini_url(provider, streaming=True)
             answer = ""
-            async with client.stream("POST", url, headers=_headers(provider), json=_payload(provider, messages, 0.0)) as response:
+            async with client.stream("POST", url, headers=_headers(provider), json=_payload(provider, messages, 0.0, thinking=thinking, max_tokens=max_tokens)) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
@@ -135,7 +149,7 @@ async def complete(
             return answer, locals().get("tokens", 0), provider.model, provider.name
 
         url = _gemini_url(provider, streaming=False) if provider.native_gemini else provider.url
-        payload = _payload(provider, messages, 0.0)
+        payload = _payload(provider, messages, 0.0, thinking=thinking, max_tokens=max_tokens)
 
         async def request_completion() -> httpx.Response:
             response = await client.post(url, headers=_headers(provider), json=payload)
@@ -146,9 +160,10 @@ async def complete(
                 raise RuntimeError(f"{provider.name} request failed with HTTP {response.status_code}: {detail}") from exc
             return response
 
-        # A long Gemma formatting request should fail once with a useful
-        # timeout instead of blocking the review screen through three retries.
-        response = await with_exponential_retry(request_completion, attempts=1 if provider.native_gemini else 3)
+        # Formatting is optional. A single bounded request keeps the review
+        # screen responsive; content_restructure will preserve the source with
+        # a local lossless fallback when the provider is slow or unavailable.
+        response = await with_exponential_retry(request_completion, attempts=1)
         data = response.json()
         answer = _extract_gemini_text(data) if provider.native_gemini else _extract_openai_text(data)
         if on_token:

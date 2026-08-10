@@ -4,8 +4,16 @@ from typing import Sequence
 from sqlalchemy import select, and_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from src.models.ai import AiUsageLog, AiCache, AiFeedback, PromptVersion, AiConversation, AiMessage
+from src.models.ai import (
+    AiUsageLog,
+    AiCache,
+    AiFeedback,
+    PromptVersion,
+    AiConversation,
+    AiMessage,
+)
 import json
+
 
 class AIRepository:
     def __init__(self, db: AsyncSession):
@@ -18,14 +26,23 @@ class AIRepository:
         await self.db.refresh(log)
         return log
 
-    async def get_usage_log(self, log_id: uuid.UUID) -> AiUsageLog | None:
+    async def get_usage_log(
+        self, log_id: uuid.UUID, user_id: uuid.UUID
+    ) -> AiUsageLog | None:
         result = await self.db.execute(
-            select(AiUsageLog).where(AiUsageLog.id == log_id)
+            select(AiUsageLog).where(
+                AiUsageLog.id == log_id,
+                AiUsageLog.user_id == user_id,
+            )
         )
         return result.scalar_one_or_none()
 
-    async def create_conversation(self, user_id: uuid.UUID, title: str = "New conversation") -> AiConversation:
-        conversation = AiConversation(user_id=user_id, title=title[:255] or "New conversation")
+    async def create_conversation(
+        self, user_id: uuid.UUID, title: str = "New conversation"
+    ) -> AiConversation:
+        conversation = AiConversation(
+            user_id=user_id, title=title[:255] or "New conversation"
+        )
         self.db.add(conversation)
         await self.db.commit()
         await self.db.refresh(conversation)
@@ -39,7 +56,9 @@ class AIRepository:
         )
         return list(result.scalars().all())
 
-    async def get_conversation(self, conversation_id: uuid.UUID, user_id: uuid.UUID) -> AiConversation | None:
+    async def get_conversation(
+        self, conversation_id: uuid.UUID, user_id: uuid.UUID
+    ) -> AiConversation | None:
         result = await self.db.execute(
             select(AiConversation).where(
                 AiConversation.id == conversation_id,
@@ -48,20 +67,36 @@ class AIRepository:
         )
         return result.scalar_one_or_none()
 
-    async def list_messages(self, conversation_id: uuid.UUID, user_id: uuid.UUID) -> list[AiMessage]:
+    async def list_messages(
+        self, conversation_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[AiMessage]:
         result = await self.db.execute(
             select(AiMessage)
             .join(AiConversation, AiConversation.id == AiMessage.conversation_id)
-            .where(AiMessage.conversation_id == conversation_id, AiConversation.user_id == user_id)
+            .where(
+                AiMessage.conversation_id == conversation_id,
+                AiConversation.user_id == user_id,
+            )
             .order_by(AiMessage.created_at.asc())
         )
         return list(result.scalars().all())
 
-    async def add_message(self, conversation_id: uuid.UUID, role: str, content: str, citations: list[dict] | None = None, usage_log_id: uuid.UUID | None = None) -> AiMessage:
+    async def add_message(
+        self,
+        conversation_id: uuid.UUID,
+        role: str,
+        content: str,
+        citations: list[dict] | None = None,
+        usage_log_id: uuid.UUID | None = None,
+        grounded_content: str | None = None,
+        extended_content: str | None = None,
+    ) -> AiMessage:
         message = AiMessage(
             conversation_id=conversation_id,
             role=role,
             content=content,
+            grounded_content=grounded_content,
+            extended_content=extended_content,
             citations=json.dumps(citations or []),
             usage_log_id=usage_log_id,
         )
@@ -79,7 +114,9 @@ class AIRepository:
         await self.db.delete(conversation)
         await self.db.commit()
 
-    async def rename_conversation(self, conversation: AiConversation, title: str) -> AiConversation:
+    async def rename_conversation(
+        self, conversation: AiConversation, title: str
+    ) -> AiConversation:
         conversation.title = title[:255].strip() or "New conversation"
         conversation.updated_at = datetime.utcnow()
         self.db.add(conversation)
@@ -88,15 +125,19 @@ class AIRepository:
         return conversation
 
     # AI Cache
-    async def get_cached(self, question_hash: str, authorization_fingerprint: str, owner_user_id: uuid.UUID) -> AiCache | None:
+    async def get_cached(
+        self,
+        question_hash: str,
+        authorization_fingerprint: str,
+        owner_user_id: uuid.UUID,
+    ) -> AiCache | None:
         # Cached answer text is served only to the exact authorization context
         # that produced it.  Do not use bitmap overlap here: all users share
         # the public bit and overlap is not proof that restricted citations
         # remain authorized.
         now = datetime.utcnow()
         result = await self.db.execute(
-            select(AiCache)
-            .where(
+            select(AiCache).where(
                 and_(
                     AiCache.question_hash == question_hash,
                     AiCache.expires_at > now,
@@ -113,30 +154,35 @@ class AIRepository:
         # PostgreSQL upsert instead of allowing a duplicate-key error to turn
         # a successfully generated answer into a failed chat request.
         cache_id = cache.id or uuid.uuid4()
-        statement = pg_insert(AiCache).values(
-            id=cache_id,
-            cache_key=cache.cache_key,
-            owner_user_id=cache.owner_user_id,
-            question_hash=cache.question_hash,
-            authorization_fingerprint=cache.authorization_fingerprint,
-            access_group_bitmap=cache.access_group_bitmap,
-            answer=cache.answer,
-            citations=cache.citations,
-            article_ids=cache.article_ids,
-            expires_at=cache.expires_at,
-        ).on_conflict_do_update(
-            index_elements=[AiCache.cache_key],
-            set_={
-                "question_hash": cache.question_hash,
-                "owner_user_id": cache.owner_user_id,
-                "authorization_fingerprint": cache.authorization_fingerprint,
-                "access_group_bitmap": cache.access_group_bitmap,
-                "answer": cache.answer,
-                "citations": cache.citations,
-                "article_ids": cache.article_ids,
-                "expires_at": cache.expires_at,
-            },
-        ).returning(AiCache.id)
+        statement = (
+            pg_insert(AiCache)
+            .values(
+                id=cache_id,
+                cache_key=cache.cache_key,
+                owner_user_id=cache.owner_user_id,
+                question_hash=cache.question_hash,
+                authorization_fingerprint=cache.authorization_fingerprint,
+                access_group_bitmap=cache.access_group_bitmap,
+                answer=cache.answer,
+                citations=cache.citations,
+                article_ids=cache.article_ids,
+                expires_at=cache.expires_at,
+            )
+            .on_conflict_do_update(
+                index_elements=[AiCache.cache_key],
+                set_={
+                    "question_hash": cache.question_hash,
+                    "owner_user_id": cache.owner_user_id,
+                    "authorization_fingerprint": cache.authorization_fingerprint,
+                    "access_group_bitmap": cache.access_group_bitmap,
+                    "answer": cache.answer,
+                    "citations": cache.citations,
+                    "article_ids": cache.article_ids,
+                    "expires_at": cache.expires_at,
+                },
+            )
+            .returning(AiCache.id)
+        )
         result = await self.db.execute(statement)
         await self.db.commit()
         cache.id = result.scalar_one()
@@ -162,8 +208,11 @@ class AIRepository:
     async def create_prompt(self, prompt: PromptVersion) -> PromptVersion:
         # Set all other active prompt templates to inactive
         from sqlalchemy import update
+
         await self.db.execute(
-            update(PromptVersion).where(PromptVersion.active == True).values(active=False)
+            update(PromptVersion)
+            .where(PromptVersion.active == True)
+            .values(active=False)
         )
         self.db.add(prompt)
         await self.db.commit()

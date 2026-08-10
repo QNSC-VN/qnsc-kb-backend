@@ -48,6 +48,13 @@ def _match_source_page(text: str, source_pages: list[tuple[int, str]]) -> int | 
     return best_page if best_score >= 0.12 else None
 
 
+def _child_chunk_metadata(parent_spec: dict, section_heading: str) -> tuple[str, str | None]:
+    """Capture parent metadata while the parent spec is still in scope."""
+    chunk_type = str(parent_spec.get("chunk_type") or "section")
+    heading = str(parent_spec.get("heading") or section_heading or "")[:255] or None
+    return chunk_type, heading
+
+
 async def set_index_status(article_id: uuid.UUID, status: str, error: str | None = None) -> None:
     async with SessionLocal() as db:
         await set_database_context(db, None, True)
@@ -60,8 +67,32 @@ async def set_index_status(article_id: uuid.UUID, status: str, error: str | None
 
 
 async def index_article(article_id: uuid.UUID) -> None:
-    """Create searchable chunks in-process while Celery is disabled."""
+    """Index an Article and persist a terminal failure state on exceptions."""
     await set_index_status(article_id, "processing")
+    try:
+        indexed = await _index_article(article_id)
+        if not indexed:
+            await set_index_status(
+                article_id,
+                "pending",
+                "Article is not active and published; indexing was skipped",
+            )
+    except Exception as exc:
+        logger.exception("Article indexing failed", article_id=str(article_id))
+        try:
+            await set_index_status(article_id, "failed", str(exc)[:2000])
+        except Exception:
+            # Preserve the original indexing exception if the status update
+            # cannot be persisted, while leaving a diagnostic trail.
+            logger.exception(
+                "Unable to persist failed Article index status",
+                article_id=str(article_id),
+            )
+        raise
+
+
+async def _index_article(article_id: uuid.UUID) -> bool:
+    """Create searchable chunks in-process while Celery is disabled."""
     async with SessionLocal() as db:
         await set_database_context(db, None, True)
         async with article_lock(db, str(article_id)):
@@ -76,7 +107,7 @@ async def index_article(article_id: uuid.UUID) -> None:
                     reason="article missing or not published",
                     status=article.status if article else None,
                 )
-                return
+                return False
 
             await chunk_repo.delete_by_article_id(article_id)
             source_result = await db.execute(
@@ -124,25 +155,31 @@ async def index_article(article_id: uuid.UUID) -> None:
                     section_ref = f"Section {section_idx + 1}"
                     section_text = section_body.strip()
                 child_chunks = []
-                pending_children: list[tuple[str, int | None, uuid.UUID]] = []
-                child_index = 0
-                for parent_spec in create_parent_child_chunks(section_text):
+                pending_children: list[tuple[str, int | None, uuid.UUID, str, str | None]] = []
+                for parent_spec in create_parent_child_chunks(section_text, heading=section_heading):
                     parent_text = str(parent_spec["parent_text"])
                     parent_page_number = page_number or _match_source_page(parent_text, source_pages)
+                    parent_chunk_type, parent_heading = _child_chunk_metadata(parent_spec, section_heading)
                     parent = await chunk_repo.create_parent_chunk(
-                        ParentChunk(article_id=article_id, text=parent_text, section_ref=section_ref, page_number=parent_page_number)
+                        ParentChunk(
+                            article_id=article_id,
+                            text=parent_text,
+                            section_ref=section_ref,
+                            chunk_type=parent_chunk_type,
+                            heading=parent_heading,
+                            page_number=parent_page_number,
+                        )
                     )
                     for child_text in parent_spec["children"]:
                         clean_text = str(child_text).strip()
                         child_page_number = page_number or _match_source_page(clean_text, source_pages) or parent_page_number
-                        pending_children.append((clean_text, child_page_number, parent.id))
-                        child_index += 1
+                        pending_children.append((clean_text, child_page_number, parent.id, parent_chunk_type, parent_heading))
 
                 embeddings = await get_text_embeddings([item[0] for item in pending_children])
                 if embeddings is None or len(embeddings) != len(pending_children):
                     embedding_failures.extend({"section": section_ref, "chunk_index": index} for index in range(len(pending_children)))
                 else:
-                    for child_index, ((clean_text, child_page_number, parent_id), embedding) in enumerate(zip(pending_children, embeddings)):
+                    for child_index, ((clean_text, child_page_number, parent_id, chunk_type, heading), embedding) in enumerate(zip(pending_children, embeddings)):
                         child_chunks.append(
                             ArticleChunk(
                                 article_id=article_id,
@@ -151,10 +188,13 @@ async def index_article(article_id: uuid.UUID) -> None:
                                 embedding=embedding,
                                 embedding_model=settings.EMBEDDING_MODEL,
                                 embedding_version=settings.EMBEDDING_VERSION,
+                                chunk_type=chunk_type,
+                                heading=heading,
+                                chunking_version=settings.CHUNKING_VERSION,
                                 access_group_bitmap=PermissionService.calculate_article_bitmask(article),
                                 department_id=article.dept,
                                 sensitivity=article.sensitivity,
-                                visibility=article.sensitivity,
+                                visibility=article.visibility,
                                 chunk_index=child_index,
                                 page_number=child_page_number,
                             )
@@ -177,6 +217,7 @@ async def index_article(article_id: uuid.UUID) -> None:
             article.index_status = "ready"
             article.index_error = None
             await db.commit()
+            return True
 
 
 async def recompute_article_permissions(article_id: uuid.UUID) -> None:
@@ -193,7 +234,7 @@ async def recompute_article_permissions(article_id: uuid.UUID) -> None:
                 article_id=article_id,
                 bitmap=PermissionService.calculate_article_bitmask(article),
                 sensitivity=article.sensitivity,
-                visibility=article.sensitivity,
+                visibility=article.visibility,
                 dept=article.dept,
             )
             logger.info("Article permissions refreshed", article_id=str(article_id))

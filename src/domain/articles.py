@@ -15,24 +15,39 @@ from src.domain.departments import resolve_active_department
 
 logger = structlog.get_logger()
 
+
 class ArticleService:
-    def __init__(self, article_repo: ArticleRepository, user_repo: UserRepository, audit_repo: AuditRepository | None = None):
+    def __init__(
+        self,
+        article_repo: ArticleRepository,
+        user_repo: UserRepository,
+        audit_repo: AuditRepository | None = None,
+    ):
         self.article_repo = article_repo
         self.user_repo = user_repo
         self.audit_repo = audit_repo
 
-    async def _audit(self, user_id: uuid.UUID, action: str, article_id: uuid.UUID) -> None:
+    async def _audit(
+        self, user_id: uuid.UUID, action: str, article_id: uuid.UUID
+    ) -> None:
         if self.audit_repo:
             await self.audit_repo.record(user_id, action, "article", str(article_id))
 
     def ensure_can_create(self, user: User, dept: str) -> None:
         """Fail before any costly side effect, including AI restructuring."""
-        draft_resource = Article(company_domain=user.company_domain, dept=dept, owner_id=user.id)
+        draft_resource = Article(
+            company_domain=user.company_domain, dept=dept, owner_id=user.id
+        )
         if not any(
-            AuthorizationService.has_permission(user, "article.create", draft_resource, scope)
+            AuthorizationService.has_permission(
+                user, "article.create", draft_resource, scope
+            )
             for scope in ("own", "department", "company", "global")
         ):
-            raise HTTPException(status_code=403, detail="Not authorized to create articles in this department")
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to create articles in this department",
+            )
 
     async def create_article(
         self,
@@ -50,27 +65,42 @@ class ArticleService:
         external_id: str | None = None,
         original_body_md: str | None = None,
     ) -> Article:
-        department = await resolve_active_department(self.article_repo.db, user.company_domain, dept)
+        department = await resolve_active_department(
+            self.article_repo.db, user.company_domain, dept
+        )
         dept = department.name
         self.ensure_can_create(user, dept)
-        draft_resource = Article(company_domain=user.company_domain, dept=dept, owner_id=user.id)
+        draft_resource = Article(
+            company_domain=user.company_domain, dept=dept, owner_id=user.id
+        )
 
         # Resolve access groups
         groups = []
         if access_group_ids:
-            groups = list(await self.user_repo.get_groups_by_ids(access_group_ids, user.company_domain))
+            groups = list(
+                await self.user_repo.get_groups_by_ids(
+                    access_group_ids, user.company_domain
+                )
+            )
             if len({group.id for group in groups}) != len(set(access_group_ids)):
-                raise HTTPException(status_code=422, detail="One or more access groups do not exist")
+                raise HTTPException(
+                    status_code=422, detail="One or more access groups do not exist"
+                )
 
         if sensitivity not in {"public", "internal", "confidential", "restricted"}:
             raise HTTPException(status_code=422, detail="Invalid article sensitivity")
         if sensitivity != "public" and not groups:
-            raise HTTPException(status_code=422, detail="Non-public articles require at least one access group")
+            raise HTTPException(
+                status_code=422,
+                detail="Non-public articles require at least one access group",
+            )
 
         # Default sensitivity and status logic:
         # Department owners/admins can publish directly, staff create drafts
         can_publish = any(
-            AuthorizationService.has_permission(user, "article.publish", draft_resource, scope)
+            AuthorizationService.has_permission(
+                user, "article.publish", draft_resource, scope
+            )
             for scope in ("own", "department", "company", "global")
         )
         initial_status = "published" if can_publish else "draft"
@@ -103,15 +133,17 @@ class ArticleService:
             owner_role=user.role,
             sensitivity=created_article.sensitivity,
         )
-        
+
         # Save tags
         if tags:
             await self.article_repo.sync_tags(created_article.id, tags)
-            
+
         # Re-fetch article with tags
         updated_article = await self.article_repo.get_by_id(created_article.id)
         if not updated_article:
-            raise HTTPException(status_code=500, detail="Failed to retrieve created article")
+            raise HTTPException(
+                status_code=500, detail="Failed to retrieve created article"
+            )
 
         # Save initial version snapshot
         snapshot = {
@@ -123,13 +155,13 @@ class ArticleService:
             "type": updated_article.type,
             "sensitivity": updated_article.sensitivity,
             "language": updated_article.language,
-            "tags": tags
+            "tags": tags,
         }
         version = ArticleVersion(
             article_id=updated_article.id,
             version=1,
             snapshot=snapshot,
-            edited_by=user.id
+            edited_by=user.id,
         )
         await self.article_repo.create_version(version)
         await self._audit(user.id, "create", updated_article.id)
@@ -138,8 +170,13 @@ class ArticleService:
 
         # Trigger event if published
         if updated_article.status == "published":
-            logger.info("Published article indexing event queued", article_id=str(updated_article.id))
-            await event_bus.publish("ArticlePublished", {"article_id": str(updated_article.id)})
+            logger.info(
+                "Published article indexing event queued",
+                article_id=str(updated_article.id),
+            )
+            await event_bus.publish(
+                "ArticlePublished", {"article_id": str(updated_article.id)}
+            )
 
         return updated_article
 
@@ -157,17 +194,24 @@ class ArticleService:
         status_: str | None = None,
         tags: list[str] | None = None,
         access_group_ids: list[uuid.UUID] | None = None,
-        next_review: datetime | None = None
+        next_review: datetime | None = None,
     ) -> Article:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         # Authorization check
         if not PermissionService.can_edit_article(user, article):
-            raise HTTPException(status_code=403, detail="Not authorized to edit this article")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to edit this article"
+            )
 
-        if sensitivity is not None and sensitivity not in {"public", "internal", "confidential", "restricted"}:
+        if sensitivity is not None and sensitivity not in {
+            "public",
+            "internal",
+            "confidential",
+            "restricted",
+        }:
             raise HTTPException(status_code=422, detail="Invalid article sensitivity")
 
         # Moving an article can silently turn a personal edit grant into an
@@ -175,21 +219,43 @@ class ArticleService:
         # with edit authority over the destination department or higher.
         target_dept = dept if dept is not None else article.dept
         if target_dept != article.dept:
-            target_resource = Article(company_domain=article.company_domain, dept=target_dept, owner_id=article.owner_id)
+            target_resource = Article(
+                company_domain=article.company_domain,
+                dept=target_dept,
+                owner_id=article.owner_id,
+            )
             if not any(
-                AuthorizationService.has_permission(user, "article.edit", target_resource, scope)
+                AuthorizationService.has_permission(
+                    user, "article.edit", target_resource, scope
+                )
                 for scope in ("department", "company", "global")
             ):
-                raise HTTPException(status_code=403, detail="Not authorized to move an article to this department")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Not authorized to move an article to this department",
+                )
 
         proposed_groups = list(article.access_groups)
         if access_group_ids is not None:
-            proposed_groups = list(await self.user_repo.get_groups_by_ids(access_group_ids, article.company_domain))
-            if len({group.id for group in proposed_groups}) != len(set(access_group_ids)):
-                raise HTTPException(status_code=422, detail="One or more access groups do not exist")
-        proposed_sensitivity = sensitivity if sensitivity is not None else article.sensitivity
+            proposed_groups = list(
+                await self.user_repo.get_groups_by_ids(
+                    access_group_ids, article.company_domain
+                )
+            )
+            if len({group.id for group in proposed_groups}) != len(
+                set(access_group_ids)
+            ):
+                raise HTTPException(
+                    status_code=422, detail="One or more access groups do not exist"
+                )
+        proposed_sensitivity = (
+            sensitivity if sensitivity is not None else article.sensitivity
+        )
         if proposed_sensitivity != "public" and not proposed_groups:
-            raise HTTPException(status_code=422, detail="Non-public articles require at least one access group")
+            raise HTTPException(
+                status_code=422,
+                detail="Non-public articles require at least one access group",
+            )
 
         # Track changes for permission recalculation and version incrementing
         permissions_changed = False
@@ -238,11 +304,17 @@ class ArticleService:
             if status_ not in {"draft", "pending_review", "published", "archived"}:
                 raise HTTPException(status_code=422, detail="Invalid article status")
             if status_ == "published" and not any(
-                AuthorizationService.has_permission(user, "article.publish", article, scope)
+                AuthorizationService.has_permission(
+                    user, "article.publish", article, scope
+                )
                 for scope in ("own", "department", "company", "global")
             ):
-                raise HTTPException(status_code=403, detail="Not authorized to publish articles")
-            published_transition = status_ == "published" and article.status != "published"
+                raise HTTPException(
+                    status_code=403, detail="Not authorized to publish articles"
+                )
+            published_transition = (
+                status_ == "published" and article.status != "published"
+            )
             article.status = status_
             if status_ == "published":
                 article.last_reviewed = datetime.utcnow()
@@ -272,19 +344,21 @@ class ArticleService:
                 "type": updated_article.type,
                 "sensitivity": updated_article.sensitivity,
                 "language": updated_article.language,
-                "tags": tag_strings
+                "tags": tag_strings,
             }
             version = ArticleVersion(
                 article_id=updated_article.id,
                 version=updated_article.version,
                 snapshot=snapshot,
-                edited_by=user.id
+                edited_by=user.id,
             )
             await self.article_repo.create_version(version)
 
         # Trigger events
         if permissions_changed:
-            await event_bus.publish("PermissionChanged", {"article_id": str(updated_article.id)})
+            await event_bus.publish(
+                "PermissionChanged", {"article_id": str(updated_article.id)}
+            )
             await self._audit(user.id, "permission_change", updated_article.id)
 
         if content_changed:
@@ -292,20 +366,30 @@ class ArticleService:
             if updated_article.status == "published":
                 if published_transition:
                     await self._audit(user.id, "publish", updated_article.id)
-                logger.info("Published article re-indexing event queued", article_id=str(updated_article.id))
-                await event_bus.publish("ArticleUpdated", {"article_id": str(updated_article.id)})
+                logger.info(
+                    "Published article re-indexing event queued",
+                    article_id=str(updated_article.id),
+                )
+                await event_bus.publish(
+                    "ArticleUpdated", {"article_id": str(updated_article.id)}
+                )
 
         return updated_article
 
     async def get_article(self, user: User, article_id: uuid.UUID) -> Article:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         # Department records are the source of truth. Archived/deactivated
         # departments must not remain reachable through an old article ID.
-        if not await resolve_active_department(self.article_repo.db, article.company_domain, article.dept, required=False):
-            raise HTTPException(status_code=404, detail="Article department is inactive or no longer exists")
+        if not await resolve_active_department(
+            self.article_repo.db, article.company_domain, article.dept, required=False
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="Article department is inactive or no longer exists",
+            )
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
@@ -313,61 +397,85 @@ class ArticleService:
         return article
 
     async def soft_delete_article(self, user: User, article_id: uuid.UUID) -> None:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_delete_article(user, article):
-            raise HTTPException(status_code=403, detail="Not authorized to delete this article")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to delete this article"
+            )
 
-        await self.article_repo.soft_delete(article_id)
+        await self.article_repo.soft_delete(article_id, user=user)
         await self._audit(user.id, "delete", article_id)
         await event_bus.publish("ArticleDeleted", {"article_id": str(article_id)})
 
-    async def get_history(self, user: User, article_id: uuid.UUID) -> Sequence[ArticleVersion]:
-        article = await self.article_repo.get_by_id(article_id)
+    async def get_history(
+        self, user: User, article_id: uuid.UUID
+    ) -> Sequence[ArticleVersion]:
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        return await self.article_repo.get_versions(article_id)
+        return await self.article_repo.get_versions(article_id, user=user)
 
-    async def get_version(self, user: User, article_id: uuid.UUID, version_num: int) -> ArticleVersion:
-        article = await self.article_repo.get_by_id(article_id)
+    async def get_version(
+        self, user: User, article_id: uuid.UUID, version_num: int
+    ) -> ArticleVersion:
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        version = await self.article_repo.get_version_by_number(article_id, version_num)
+        version = await self.article_repo.get_version_by_number(
+            article_id, version_num, user=user
+        )
         if not version:
             raise HTTPException(status_code=404, detail="Version not found")
         return version
 
-    async def restore_version(self, user: User, article_id: uuid.UUID, version_num: int) -> Article:
+    async def restore_version(
+        self, user: User, article_id: uuid.UUID, version_num: int
+    ) -> Article:
         """Restore a historical snapshot as a new active version.
 
         Historical snapshots are never overwritten. Restoring version 2 of a
         v4 article creates v5 with v2's content and keeps v1-v4 available for
         audit and comparison.
         """
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
         if not PermissionService.can_edit_article(user, article):
-            raise HTTPException(status_code=403, detail="Not authorized to restore this article version")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to restore this article version"
+            )
 
-        snapshot_version = await self.article_repo.get_version_by_number(article_id, version_num)
+        snapshot_version = await self.article_repo.get_version_by_number(
+            article_id, version_num, user=user
+        )
         if not snapshot_version:
             raise HTTPException(status_code=404, detail="Version not found")
         if snapshot_version.version == article.version:
-            raise HTTPException(status_code=409, detail="This version is already active")
+            raise HTTPException(
+                status_code=409, detail="This version is already active"
+            )
 
         snapshot = snapshot_version.snapshot or {}
-        for field in ("title", "body_md", "dept", "domain", "type", "sensitivity", "language"):
+        for field in (
+            "title",
+            "body_md",
+            "dept",
+            "domain",
+            "type",
+            "sensitivity",
+            "language",
+        ):
             if field in snapshot and snapshot[field] is not None:
                 setattr(article, field, snapshot[field])
 
@@ -380,9 +488,11 @@ class ArticleService:
         tags = snapshot.get("tags")
         if isinstance(tags, list):
             await self.article_repo.sync_tags(article.id, [str(tag) for tag in tags])
-            restored_article = await self.article_repo.get_by_id(article.id)
+            restored_article = await self.article_repo.get_by_id(article.id, user=user)
         if not restored_article:
-            raise HTTPException(status_code=500, detail="Failed to reload restored article")
+            raise HTTPException(
+                status_code=500, detail="Failed to reload restored article"
+            )
 
         restored_snapshot = {
             "title": restored_article.title,
@@ -395,14 +505,18 @@ class ArticleService:
             "tags": [tag.tag for tag in restored_article.tags],
             "restored_from_version": version_num,
         }
-        await self.article_repo.create_version(ArticleVersion(
-            article_id=restored_article.id,
-            version=restored_article.version,
-            snapshot=restored_snapshot,
-            edited_by=user.id,
-        ))
+        await self.article_repo.create_version(
+            ArticleVersion(
+                article_id=restored_article.id,
+                version=restored_article.version,
+                snapshot=restored_snapshot,
+                edited_by=user.id,
+            )
+        )
         await self._audit(user.id, "restore_version", restored_article.id)
 
         if restored_article.status == "published":
-            await event_bus.publish("ArticleUpdated", {"article_id": str(restored_article.id)})
+            await event_bus.publish(
+                "ArticleUpdated", {"article_id": str(restored_article.id)}
+            )
         return restored_article

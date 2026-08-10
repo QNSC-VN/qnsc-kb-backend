@@ -50,18 +50,13 @@ async def home_summary(current_user: User = Depends(get_current_user), db: Async
         or AuthorizationService.has_full_company_article_access(current_user)
     )
     home_departments = AuthorizationService.member_department_names(current_user)
-    pending_stmt = select(func.count()).select_from(PendingDraft).where(
-        PendingDraft.status == "pending",
-        PendingDraft.company_domain == current_user.company_domain,
-    )
     gaps_stmt = select(func.count()).select_from(Gap).where(
         Gap.status.in_(["open", "assigned"]),
         Gap.company_domain == current_user.company_domain,
     )
     if not home_has_full_company_access:
-        pending_stmt = pending_stmt.where(PendingDraft.dept.in_(home_departments))
         gaps_stmt = gaps_stmt.where(Gap.dept.in_(home_departments))
-    pending = await db.scalar(pending_stmt) or 0
+    pending = await GovernanceRepository(db).count_pending_for_user(current_user)
     gaps = await db.scalar(gaps_stmt) or 0
     return {
         "total_articles": len(articles), "departments": len({department.name for article in articles for department in (article.departments or [])} | {article.dept for article in articles}),

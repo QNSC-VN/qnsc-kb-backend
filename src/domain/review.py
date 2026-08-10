@@ -17,7 +17,7 @@ class ReviewService:
         article_id: uuid.UUID,
         next_review_date: datetime
     ) -> Article:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 

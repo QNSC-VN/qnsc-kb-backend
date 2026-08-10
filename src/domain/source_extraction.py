@@ -137,6 +137,12 @@ def _markitdown() -> Any:
 def _convert_with_markitdown(filename: str, data: bytes) -> str:
     if not settings.MARKITDOWN_ENABLED:
         return ""
+    # MarkItDown is a structure-enhancement layer, not the authoritative
+    # reader for formats that already have a lossless native extractor. Some
+    # installed MarkItDown versions reject .md/.txt/.csv outright; bypassing
+    # them avoids turning a valid upload into a 500 during completion.
+    if Path(filename).suffix.lower() in {".md", ".txt", ".csv"}:
+        return ""
     converter = _markitdown()
     if converter is None:
         return ""

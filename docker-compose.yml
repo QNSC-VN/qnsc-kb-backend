@@ -37,16 +37,16 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.api
+    entrypoint: ["/app/docker/entrypoint.sh"]
     ports:
       - "8000:8000"
     volumes:
       - .:/app
-      - source_data:/app/storage/sources
       - ./connector_sources:/app/storage/connectors
     # Restrict reloads to application source.  Test runs and Celery's local
     # schedule database must not restart the API and reload the embedding
     # model during ordinary local development.
-    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src --reload-exclude tests/* --reload-exclude celerybeat-schedule* --reload-exclude .pytest_cache/*
+    command: ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-exclude", "tests/*", "--reload-exclude", "celerybeat-schedule*", "--reload-exclude", ".pytest_cache/*"]
     mem_limit: 2g
     mem_reservation: 512m
     environment:
@@ -70,6 +70,7 @@ services:
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/qnsc_kb
       - REDIS_URL=redis://redis:6379/0
+      - AUTO_CREATE_SCHEMA=false
       - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
       - OMP_NUM_THREADS=1
       - MKL_NUM_THREADS=1
@@ -124,4 +125,3 @@ services:
 volumes:
   pgdata:
   redisdata:
-  source_data:

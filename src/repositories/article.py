@@ -1,36 +1,237 @@
 import uuid
 from typing import Sequence, Any
-from sqlalchemy import select, update, and_, or_, exists
+from sqlalchemy import select, update, and_, or_, exists, false, true, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from src.models.article import Article, ArticleVersion, ArticleTag, article_access
+from src.models.article import (
+    Article,
+    ArticleVersion,
+    ArticleUserPermission,
+    ArticleTag,
+    DocumentSource,
+    article_access,
+)
 from src.models.user import User, Department
 from src.domain.rbac import AuthorizationService
 from src.domain.permissions import PermissionService
+
 
 class ArticleRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_id(self, article_id: uuid.UUID) -> Article | None:
+    @staticmethod
+    def _has_article_read_permission(user: User) -> bool:
+        return any(
+            AuthorizationService.has_permission(
+                user, "article.read", requested_scope=scope
+            )
+            for scope in ("own", "department", "company", "global")
+        )
+
+    @classmethod
+    def _authorized_article_filters(cls, user: User) -> list[Any]:
+        """Build the Article visibility predicate used by every read query.
+
+        This predicate intentionally contains the same tenant, department,
+        group, ownership, and workflow boundaries as ``PermissionService``.
+        The repository never relies on fetching a broad candidate set and
+        filtering it in Python, which would expose private rows to the
+        application process and violate the data-layer authorization rule.
+        """
+        filters: list[Any] = [
+            Article.lifecycle_status == "active",
+            Article.status != "deleted",
+            exists(
+                select(Department.id).where(
+                    Department.company_domain == Article.company_domain,
+                    Department.name == Article.dept,
+                    Department.active.is_(True),
+                )
+            ),
+        ]
+        explicit_allow = Article.user_permissions.any(
+            and_(
+                ArticleUserPermission.user_id == user.id,
+                ArticleUserPermission.effect == "allow",
+            )
+        )
+        explicit_deny = Article.user_permissions.any(
+            and_(
+                ArticleUserPermission.user_id == user.id,
+                ArticleUserPermission.effect == "deny",
+            )
+        )
+        source_explicit_allow = Article.user_permissions.any(
+            and_(
+                ArticleUserPermission.user_id == user.id,
+                ArticleUserPermission.effect == "allow",
+                ArticleUserPermission.source == "sharepoint",
+            )
+        )
+        # An explicit deny is evaluated before every role, department, group,
+        # and public allow. This predicate must stay in SQL so denied content
+        # never enters the application result set.
+        filters.append(not_(explicit_deny))
+        if not cls._has_article_read_permission(user):
+            return [false()]
+
+        global_read = AuthorizationService.has_permission(
+            user, "article.read", requested_scope="global"
+        )
+        full_company_access = AuthorizationService.has_full_company_article_access(user)
+        if not global_read:
+            filters.append(Article.company_domain == user.company_domain)
+
+        if not (global_read or full_company_access):
+            member_departments = AuthorizationService.member_department_names(user)
+            if user.dept:
+                member_departments.add(user.dept)
+            if not member_departments:
+                department_scope = false()
+            else:
+                department_scope = or_(
+                    Article.dept.in_(member_departments),
+                    Article.departments.any(Department.name.in_(member_departments)),
+                )
+            permission_conditions: list[Any] = [
+                Article.sensitivity == "public",
+                Article.owner_id == user.id,
+                explicit_allow,
+            ]
+            group_ids = [group.id for group in getattr(user, "groups", [])]
+            if group_ids:
+                permission_conditions.append(
+                    Article.access_groups.any(article_access.c.group_id.in_(group_ids))
+                )
+            if AuthorizationService.has_permission(
+                user, "article.read", requested_scope="department"
+            ):
+                owned_departments = AuthorizationService.owned_department_names(user)
+                if owned_departments:
+                    permission_conditions.append(
+                        or_(
+                            Article.dept.in_(owned_departments),
+                            Article.departments.any(
+                                Department.name.in_(owned_departments)
+                            ),
+                        )
+                    )
+            non_user_scope = and_(
+                Article.visibility != "users",
+                department_scope,
+                or_(*permission_conditions),
+            )
+            user_scope = and_(Article.visibility == "users", explicit_allow)
+            filters.append(or_(non_user_scope, user_scope))
+
+        else:
+            # Global/company-wide readers may see all normal visibility modes,
+            # but explicit-user mode remains an explicit allow-list and deny
+            # rows still win.
+            filters.append(or_(Article.visibility != "users", explicit_allow))
+
+        # SharePoint ACLs are an intersection with the internal policy. Keep
+        # this predicate in every Article query so a global/company reader
+        # cannot bypass a mapped group, mapped direct user, or fail-closed
+        # provider ACL through the broad internal branch above.
+        source_acl_article = Article.sources.any(
+            DocumentSource.source_system == "sharepoint"
+        )
+        source_acl_allows: list[Any] = [source_explicit_allow]
+        group_ids = [group.id for group in getattr(user, "groups", [])]
+        if group_ids:
+            source_acl_allows.append(
+                Article.access_groups.any(article_access.c.group_id.in_(group_ids))
+            )
+        filters.append(
+            or_(
+                not_(source_acl_article),
+                and_(source_acl_article, or_(*source_acl_allows)),
+            )
+        )
+
+        # Published content is the only ordinary knowledge-base surface.
+        # Owners and governance users may inspect working states, but only
+        # within the same SQL scope used for the article itself.
+        unpublished_conditions: list[Any] = []
+        if AuthorizationService.has_permission(
+            user, "article.review", requested_scope="global"
+        ) or AuthorizationService.has_permission(
+            user, "article.publish", requested_scope="global"
+        ):
+            unpublished_conditions.append(true())
+        elif AuthorizationService.has_permission(
+            user, "article.review", requested_scope="company"
+        ) or AuthorizationService.has_permission(
+            user, "article.publish", requested_scope="company"
+        ):
+            unpublished_conditions.append(true())
+        else:
+            if AuthorizationService.has_permission(
+                user, "article.review", requested_scope="department"
+            ) or AuthorizationService.has_permission(
+                user, "article.publish", requested_scope="department"
+            ):
+                owned_departments = AuthorizationService.owned_department_names(user)
+                if owned_departments:
+                    unpublished_conditions.append(
+                        or_(
+                            Article.dept.in_(owned_departments),
+                            Article.departments.any(
+                                Department.name.in_(owned_departments)
+                            ),
+                        )
+                    )
+            if any(
+                AuthorizationService.has_permission(user, key, requested_scope="own")
+                for key in (
+                    "article.review",
+                    "article.publish",
+                    "article.edit",
+                    "article.delete",
+                )
+            ):
+                unpublished_conditions.append(Article.owner_id == user.id)
+
+        if unpublished_conditions:
+            filters.append(or_(Article.status == "published", *unpublished_conditions))
+        else:
+            filters.append(Article.status == "published")
+        return filters
+
+    async def get_by_id(
+        self, article_id: uuid.UUID, user: User | None = None
+    ) -> Article | None:
+        filters = [Article.id == article_id]
+        if user is not None:
+            filters.extend(self._authorized_article_filters(user))
         result = await self.db.execute(
             select(Article)
-            .where(Article.id == article_id)
+            .where(and_(*filters))
             .options(
                 selectinload(Article.access_groups),
                 selectinload(Article.departments),
                 selectinload(Article.tags),
                 selectinload(Article.owner),
                 selectinload(Article.sources),
+                selectinload(Article.user_permissions).selectinload(
+                    ArticleUserPermission.user
+                ),
             )
         )
         return result.scalar_one_or_none()
 
-    async def get_by_id_for_update(self, article_id: uuid.UUID) -> Article | None:
+    async def get_by_id_for_update(
+        self, article_id: uuid.UUID, user: User | None = None
+    ) -> Article | None:
         """Load an article row with a transaction lock for state transitions."""
+        filters = [Article.id == article_id]
+        if user is not None:
+            filters.extend(self._authorized_article_filters(user))
         result = await self.db.execute(
             select(Article)
-            .where(Article.id == article_id)
+            .where(and_(*filters))
             .with_for_update()
             .options(
                 selectinload(Article.access_groups),
@@ -38,6 +239,9 @@ class ArticleRepository:
                 selectinload(Article.tags),
                 selectinload(Article.owner),
                 selectinload(Article.sources),
+                selectinload(Article.user_permissions).selectinload(
+                    ArticleUserPermission.user
+                ),
             )
         )
         return result.scalar_one_or_none()
@@ -49,7 +253,7 @@ class ArticleRepository:
         type_: str | None = None,
         sensitivity: str | None = None,
         status: str | None = None,
-        search_query: str | None = None
+        search_query: str | None = None,
     ) -> Sequence[Article]:
         stmt = select(Article).options(
             selectinload(Article.access_groups),
@@ -57,64 +261,21 @@ class ArticleRepository:
             selectinload(Article.tags),
             selectinload(Article.owner),
             selectinload(Article.sources),
+            selectinload(Article.user_permissions).selectinload(
+                ArticleUserPermission.user
+            ),
         )
-        
-        # Enforce RBAC at the query level (unless user is Admin)
-        filters = [
-            Article.lifecycle_status == "active",
-            exists(select(Department.id).where(
-                Department.company_domain == Article.company_domain,
-                Department.name == Article.dept,
-                Department.active.is_(True),
-            )),
-        ]
-        can_read_global = AuthorizationService.has_permission(user, "article.read", requested_scope="global")
-        can_read_department = AuthorizationService.has_permission(user, "article.read", requested_scope="department")
-        full_company_access = AuthorizationService.has_full_company_article_access(user)
-        if not can_read_global:
-            filters.append(Article.company_domain == user.company_domain)
-            if not full_company_access:
-                member_departments = AuthorizationService.member_department_names(user)
-                filters.append(or_(
-                    Article.dept.in_(member_departments),
-                    Article.departments.any(Department.name.in_(member_departments)),
-                ))
-            user_group_ids = [g.id for g in user.groups]
-            
-            # Non-admins see:
-            # 1. Public articles
-            # 2. Articles where they belong to one of the allowed access groups
-            # 3. Department-scoped permissions can see articles in owned departments
-            # 4. Article owner can see their own article
-            permission_conditions = [
-                Article.sensitivity == "public",
-                Article.owner_id == user.id
-            ]
-            
-            if user_group_ids and not full_company_access:
-                permission_conditions.append(
-                    Article.access_groups.any(article_access.c.group_id.in_(user_group_ids))
-                )
-                
-            owned_departments = AuthorizationService.owned_department_names(user)
-            if can_read_department and owned_departments:
-                permission_conditions.append(or_(Article.dept.in_(owned_departments), Article.departments.any(Department.name.in_(owned_departments))))
-                
-            if not full_company_access:
-                filters.append(or_(*permission_conditions))
-            
-            # Non-admins cannot see raw "draft" articles unless they own them or are reviewers
-            if not AuthorizationService.has_permission(user, "article.review", requested_scope="company"):
-                filters.append(or_(
-                    Article.status == "published",
-                    Article.owner_id == user.id
-                ))
-            else:
-                filters.append(Article.status.in_(["published", "pending_review"]))
-        
+
+        filters = self._authorized_article_filters(user)
+
         # Apply standard filters
         if dept:
-            filters.append(or_(Article.dept == dept, Article.departments.any(Department.name == dept)))
+            filters.append(
+                or_(
+                    Article.dept == dept,
+                    Article.departments.any(Department.name == dept),
+                )
+            )
         if type_:
             filters.append(Article.type == type_)
         if sensitivity:
@@ -123,76 +284,66 @@ class ArticleRepository:
             filters.append(Article.status == status)
         if search_query:
             filters.append(Article.title.ilike(f"%{search_query}%"))
-            
-        # Default exclude "deleted" articles (soft-delete status)
-        filters.append(Article.status != "deleted")
 
         if filters:
             stmt = stmt.where(and_(*filters))
 
-        result = await self.db.execute(stmt.order_by(Article.created_at.desc()))
-        # Query predicates are intentionally coarse for performance.  The
-        # service-level decision is authoritative because group ACLs can be
-        # stricter than ownership or department scope.
-        visible_articles = []
-        for article in result.scalars().all():
-            if PermissionService.can_view_article(user, article):
-                AuthorizationService.restrict_article_metadata(user, article)
-                visible_articles.append(article)
-        return visible_articles
-
-    async def list_related(self, user: User, article: Article, limit: int = 6) -> Sequence[Article]:
-        """Return published, authorized articles related by taxonomy or tags."""
-        stmt = select(Article).options(
-            selectinload(Article.access_groups),
-            selectinload(Article.departments),
-            selectinload(Article.tags),
-            selectinload(Article.owner),
-            selectinload(Article.sources),
-        ).where(
-            Article.id != article.id,
-            Article.status == "published",
-            Article.lifecycle_status == "active",
-            exists(select(Department.id).where(
-                Department.company_domain == Article.company_domain,
-                Department.name == Article.dept,
-                Department.active.is_(True),
-            )),
-            or_(
-                or_(Article.dept == article.dept, Article.departments.any(Department.name == article.dept)),
-                Article.domain == article.domain,
-                Article.tags.any(ArticleTag.tag.in_(
-                    select(ArticleTag.tag).where(ArticleTag.article_id == article.id)
-                )),
-            ),
+        result = await self.db.execute(
+            stmt.order_by(Article.updated_at.desc(), Article.created_at.desc())
         )
-        can_read_global = AuthorizationService.has_permission(user, "article.read", requested_scope="global")
-        can_read_department = AuthorizationService.has_permission(user, "article.read", requested_scope="department")
-        full_company_access = AuthorizationService.has_full_company_article_access(user)
-        if not can_read_global:
-            stmt = stmt.where(Article.company_domain == user.company_domain)
-            if not full_company_access:
-                member_departments = AuthorizationService.member_department_names(user)
-                stmt = stmt.where(or_(
-                    Article.dept.in_(member_departments),
-                    Article.departments.any(Department.name.in_(member_departments)),
-                ))
-            permission_conditions = [Article.sensitivity == "public", Article.owner_id == user.id]
-            group_ids = [group.id for group in user.groups]
-            if group_ids and not full_company_access:
-                permission_conditions.append(Article.access_groups.any(article_access.c.group_id.in_(group_ids)))
-            owned_departments = AuthorizationService.owned_department_names(user)
-            if can_read_department and owned_departments:
-                permission_conditions.append(or_(Article.dept.in_(owned_departments), Article.departments.any(Department.name.in_(owned_departments))))
-            if not full_company_access:
-                stmt = stmt.where(or_(*permission_conditions))
-        result = await self.db.execute(stmt.order_by(Article.created_at.desc()).limit(limit * 3))
-        visible_candidates = []
-        for candidate in result.scalars().all():
-            if PermissionService.can_view_article(user, candidate):
-                AuthorizationService.restrict_article_metadata(user, candidate)
-                visible_candidates.append(candidate)
-        return visible_candidates[:limit]
+        articles = result.scalars().all()
+        for article in articles:
+            AuthorizationService.restrict_article_metadata(user, article)
+        return articles
+
+    async def list_related(
+        self, user: User, article: Article, limit: int = 6
+    ) -> Sequence[Article]:
+        """Return published, authorized articles related by taxonomy or tags."""
+        stmt = (
+            select(Article)
+            .options(
+                selectinload(Article.access_groups),
+                selectinload(Article.departments),
+                selectinload(Article.tags),
+                selectinload(Article.owner),
+                selectinload(Article.sources),
+            )
+            .where(
+                Article.id != article.id,
+                Article.status == "published",
+                Article.lifecycle_status == "active",
+                exists(
+                    select(Department.id).where(
+                        Department.company_domain == Article.company_domain,
+                        Department.name == Article.dept,
+                        Department.active.is_(True),
+                    )
+                ),
+                or_(
+                    or_(
+                        Article.dept == article.dept,
+                        Article.departments.any(Department.name == article.dept),
+                    ),
+                    Article.domain == article.domain,
+                    Article.tags.any(
+                        ArticleTag.tag.in_(
+                            select(ArticleTag.tag).where(
+                                ArticleTag.article_id == article.id
+                            )
+                        )
+                    ),
+                ),
+            )
+        )
+        stmt = stmt.where(and_(*self._authorized_article_filters(user)))
+        result = await self.db.execute(
+            stmt.order_by(Article.created_at.desc()).limit(limit * 3)
+        )
+        candidates = result.scalars().all()
+        for candidate in candidates:
+            AuthorizationService.restrict_article_metadata(user, candidate)
+        return candidates[:limit]
 
     async def create(self, article: Article) -> Article:
         self.db.add(article)
@@ -206,12 +357,13 @@ class ArticleRepository:
         await self.db.refresh(article)
         return article
 
-    async def soft_delete(self, article_id: uuid.UUID) -> bool:
-        result = await self.db.execute(
-            update(Article)
-            .where(Article.id == article_id)
-            .values(status="deleted")
-        )
+    async def soft_delete(
+        self, article_id: uuid.UUID, user: User | None = None
+    ) -> bool:
+        stmt = update(Article).where(Article.id == article_id)
+        if user is not None:
+            stmt = stmt.where(and_(*self._authorized_article_filters(user)))
+        result = await self.db.execute(stmt.values(status="deleted"))
         await self.db.commit()
         return result.rowcount > 0
 
@@ -221,34 +373,57 @@ class ArticleRepository:
         await self.db.refresh(version)
         return version
 
-    async def get_versions(self, article_id: uuid.UUID) -> Sequence[ArticleVersion]:
+    async def get_versions(
+        self, article_id: uuid.UUID, user: User | None = None
+    ) -> Sequence[ArticleVersion]:
+        filters: list[Any] = [ArticleVersion.article_id == article_id]
+        if user is not None:
+            # Historical snapshots contain prior Article body/title data. Keep
+            # the version query itself inside the same SQL authorization
+            # boundary as the current Article lookup instead of relying on the
+            # caller's earlier check.
+            filters.extend(self._authorized_article_filters(user))
         result = await self.db.execute(
             select(ArticleVersion)
-            .where(ArticleVersion.article_id == article_id)
+            .join(Article, Article.id == ArticleVersion.article_id)
+            .where(and_(*filters))
             .order_by(ArticleVersion.version.desc())
             .options(selectinload(ArticleVersion.editor))
         )
         return result.scalars().all()
 
-    async def get_version_by_number(self, article_id: uuid.UUID, version_num: int) -> ArticleVersion | None:
+    async def get_version_by_number(
+        self,
+        article_id: uuid.UUID,
+        version_num: int,
+        user: User | None = None,
+    ) -> ArticleVersion | None:
+        filters: list[Any] = [
+            ArticleVersion.article_id == article_id,
+            ArticleVersion.version == version_num,
+        ]
+        if user is not None:
+            filters.extend(self._authorized_article_filters(user))
         result = await self.db.execute(
             select(ArticleVersion)
-            .where(
-                and_(
-                    ArticleVersion.article_id == article_id,
-                    ArticleVersion.version == version_num
-                )
-            )
+            .join(Article, Article.id == ArticleVersion.article_id)
+            .where(and_(*filters))
             .options(selectinload(ArticleVersion.editor))
         )
         return result.scalar_one_or_none()
 
-    async def sync_tags(self, article_id: uuid.UUID, tags: list[str]) -> None:
+    async def sync_tags(
+        self, article_id: uuid.UUID, tags: list[str], *, commit: bool = True
+    ) -> None:
         # Delete existing tags
         from sqlalchemy import delete
-        await self.db.execute(delete(ArticleTag).where(ArticleTag.article_id == article_id))
-        
+
+        await self.db.execute(
+            delete(ArticleTag).where(ArticleTag.article_id == article_id)
+        )
+
         # Add new tags
         for t in tags:
             self.db.add(ArticleTag(article_id=article_id, tag=t))
-        await self.db.commit()
+        if commit:
+            await self.db.commit()

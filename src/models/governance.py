@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import DateTime, ForeignKey, String, Text, Integer, JSON, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, String, Text, Integer, JSON, UniqueConstraint, Boolean, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -16,6 +16,11 @@ class PendingDraft(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     restructured_body_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Keep an AI candidate separately when preservation checks reject it. The
+    # reviewer can inspect it and explicitly accept or discard it; the source
+    # extraction in ``summary`` is never overwritten.
+    restructure_candidate_md: Mapped[str | None] = mapped_column(Text, nullable=True)
+    restructure_decision: Mapped[str] = mapped_column(String(30), default="not_reviewed", nullable=False)
     restructure_status: Mapped[str] = mapped_column(String(40), default="pending", nullable=False)
     restructure_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     restructure_error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -45,10 +50,62 @@ class PendingDraft(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     external_document_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("external_documents.id", ondelete="SET NULL"), nullable=True, index=True)
 
+    candidates: Mapped[list["DraftCandidate"]] = relationship(
+        "DraftCandidate", back_populates="draft", cascade="all, delete-orphan", lazy="selectin",
+    )
+
     creator: Mapped["User | None"] = relationship("User", foreign_keys=[created_by])
     assigned_approver: Mapped["User | None"] = relationship("User", foreign_keys=[assigned_approver_id])
     assigner: Mapped["User | None"] = relationship("User", foreign_keys=[assigned_by])
     reviewer: Mapped["User | None"] = relationship("User", foreign_keys=[reviewed_by])
+
+
+class DraftTransition(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Immutable state-machine history for a pending draft."""
+    __tablename__ = "draft_transitions"
+
+    draft_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pending_drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    from_status: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    to_status: Mapped[str] = mapped_column(String(30), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False, default="applied")
+
+    draft: Mapped[PendingDraft] = relationship("PendingDraft")
+    actor: Mapped["User | None"] = relationship("User", foreign_keys=[actor_id])
+
+
+class DraftCandidate(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """A structure-aware article candidate awaiting batch review."""
+    __tablename__ = "draft_candidates"
+    __table_args__ = (UniqueConstraint("draft_id", "position", name="uq_draft_candidate_position"),)
+
+    draft_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pending_drafts.id", ondelete="CASCADE"), nullable=False, index=True)
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    body_md: Mapped[str] = mapped_column(Text, nullable=False)
+    source_start: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    source_end: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    heading: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="candidate")
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    draft: Mapped[PendingDraft] = relationship("PendingDraft", back_populates="candidates")
+
+
+class ApproverRule(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Company department rule for automatically selecting an approver."""
+    __tablename__ = "approver_rules"
+    __table_args__ = (UniqueConstraint("company_domain", "dept", name="uq_approver_rules_company_dept"),)
+
+    company_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    approver_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+    approver: Mapped["User"] = relationship("User", foreign_keys=[approver_id])
+    creator: Mapped["User | None"] = relationship("User", foreign_keys=[created_by])
 
 
 class IngestionFingerprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
@@ -70,7 +127,7 @@ class IngestionFingerprint(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 class Gap(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "gaps"
 
-    __table_args__ = (UniqueConstraint("company_domain", "query", name="uq_gaps_company_query"),)
+    __table_args__ = (Index("uq_gaps_company_query", "company_domain", "query", unique=True),)
 
     company_domain: Mapped[str] = mapped_column(String(255), nullable=False, default="local", index=True)
     query: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -87,5 +144,6 @@ class AuditLog(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     action: Mapped[str] = mapped_column(String(50), nullable=False)
     target_type: Mapped[str] = mapped_column(String(50), nullable=False)  # article, user, group, draft
     target_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(30), nullable=False, default="success", server_default="success")
 
     user: Mapped["User | None"] = relationship("User")

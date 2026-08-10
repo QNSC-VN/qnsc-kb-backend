@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Table, Column, ForeignKey, String, Integer, Boolean, UniqueConstraint
+from sqlalchemy import Table, Column, ForeignKey, String, Integer, Boolean, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -25,8 +25,8 @@ user_departments = Table(
 class AccessGroup(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "access_groups"
     __table_args__ = (
-        UniqueConstraint("company_domain", "name", name="uq_access_groups_company_name"),
-        UniqueConstraint("company_domain", "bitmask_position", name="uq_access_groups_company_bit_position"),
+        Index("uq_access_groups_company_name", "company_domain", "name", unique=True),
+        Index("uq_access_groups_company_bit_position", "company_domain", "bitmask_position", unique=True),
     )
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -89,3 +89,20 @@ class User(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     roles: Mapped[list["Role"]] = relationship(
         "Role", secondary="user_roles", back_populates="users"
     )
+    identities: Mapped[list["ExternalIdentity"]] = relationship(
+        "ExternalIdentity", back_populates="user", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class ExternalIdentity(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Provider subject linked to one internal user account."""
+    __tablename__ = "external_identities"
+    __table_args__ = (UniqueConstraint("provider", "subject", name="uq_external_identity_provider_subject"),)
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    user: Mapped[User] = relationship("User", back_populates="identities")

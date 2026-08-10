@@ -8,48 +8,53 @@ from src.repositories.interaction import InteractionRepository
 from src.repositories.article import ArticleRepository
 from src.domain.permissions import PermissionService
 
+
 class InteractionsService:
-    def __init__(self, interaction_repo: InteractionRepository, article_repo: ArticleRepository):
+    def __init__(
+        self, interaction_repo: InteractionRepository, article_repo: ArticleRepository
+    ):
         self.interaction_repo = interaction_repo
         self.article_repo = article_repo
 
     async def _visible_article(self, user: User, article_id: uuid.UUID) -> Article:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
         return article
 
-    async def add_comment(self, user: User, article_id: uuid.UUID, text: str) -> Comment:
-        article = await self.article_repo.get_by_id(article_id)
+    async def add_comment(
+        self, user: User, article_id: uuid.UUID, text: str
+    ) -> Comment:
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        comment = Comment(
-            article_id=article_id,
-            user_id=user.id,
-            text=text
-        )
+        comment = Comment(article_id=article_id, user_id=user.id, text=text)
         return await self.interaction_repo.create_comment(comment)
 
-    async def get_comments(self, user: User, article_id: uuid.UUID) -> Sequence[Comment]:
-        article = await self.article_repo.get_by_id(article_id)
+    async def get_comments(
+        self, user: User, article_id: uuid.UUID
+    ) -> Sequence[Comment]:
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        return await self.interaction_repo.get_comments(article_id)
+        return await self.interaction_repo.get_comments(article_id, user)
 
     async def delete_comment(self, user: User, comment_id: uuid.UUID) -> bool:
-        deleted = await self.interaction_repo.delete_comment(comment_id, user.id)
+        deleted = await self.interaction_repo.delete_comment(comment_id, user.id, user)
         if not deleted:
-            raise HTTPException(status_code=403, detail="Comment not found or unauthorized to delete")
+            raise HTTPException(
+                status_code=403, detail="Comment not found or unauthorized to delete"
+            )
         return True
 
     # Upvotes/Downvotes
@@ -57,39 +62,37 @@ class InteractionsService:
         if value not in [1, -1, 0]:
             raise HTTPException(status_code=400, detail="Invalid vote value")
 
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        vote = Vote(
-            article_id=article_id,
-            user_id=user.id,
-            value=value
-        )
-        await self.interaction_repo.cast_vote(vote)
-        
+        vote = Vote(article_id=article_id, user_id=user.id, value=value)
+        await self.interaction_repo.cast_vote(vote, user)
+
         # Return new summaries
-        return await self.interaction_repo.get_votes_summary(article_id)
+        return await self.interaction_repo.get_votes_summary(article_id, user)
 
     async def get_user_vote(self, user: User, article_id: uuid.UUID) -> int:
         await self._visible_article(user, article_id)
-        return await self.interaction_repo.get_user_vote(article_id, user.id)
+        return await self.interaction_repo.get_user_vote(article_id, user.id, user)
 
-    async def get_votes_summary(self, user: User, article_id: uuid.UUID) -> dict[str, int]:
-        article = await self.article_repo.get_by_id(article_id)
+    async def get_votes_summary(
+        self, user: User, article_id: uuid.UUID
+    ) -> dict[str, int]:
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
         if not PermissionService.can_view_article(user, article):
             raise HTTPException(status_code=403, detail="Access denied")
 
-        return await self.interaction_repo.get_votes_summary(article_id)
+        return await self.interaction_repo.get_votes_summary(article_id, user)
 
     # Bookmarks
     async def add_bookmark(self, user: User, article_id: uuid.UUID) -> bool:
-        article = await self.article_repo.get_by_id(article_id)
+        article = await self.article_repo.get_by_id(article_id, user=user)
         if not article or article.status == "deleted":
             raise HTTPException(status_code=404, detail="Article not found")
 
@@ -97,18 +100,18 @@ class InteractionsService:
             raise HTTPException(status_code=403, detail="Access denied")
 
         bookmark = Bookmark(user_id=user.id, article_id=article_id)
-        await self.interaction_repo.add_bookmark(bookmark)
+        await self.interaction_repo.add_bookmark(bookmark, user)
         return True
 
     async def remove_bookmark(self, user: User, article_id: uuid.UUID) -> bool:
         await self._visible_article(user, article_id)
-        return await self.interaction_repo.remove_bookmark(user.id, article_id)
+        return await self.interaction_repo.remove_bookmark(user, article_id)
 
     async def list_bookmarks(self, user: User) -> Sequence[Article]:
-        bookmarks = await self.interaction_repo.get_bookmarks(user.id)
-        # A bookmark is a convenience record, never a durable access grant.
-        return [article for article in bookmarks if PermissionService.can_view_article(user, article)]
+        # The bookmark query itself applies the Article visibility predicate;
+        # a bookmark is a convenience record, never a durable access grant.
+        return await self.interaction_repo.get_bookmarks(user)
 
     async def is_bookmarked(self, user: User, article_id: uuid.UUID) -> bool:
         await self._visible_article(user, article_id)
-        return await self.interaction_repo.is_bookmarked(user.id, article_id)
+        return await self.interaction_repo.is_bookmarked(user, article_id)

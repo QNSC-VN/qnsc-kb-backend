@@ -2,7 +2,7 @@
 
 ## Required environment
 
-Production must set `ENVIRONMENT=production`, a random `SECRET_KEY` of at least 32 characters, `AUTO_CREATE_SCHEMA=false`, `ALLOW_SELF_REGISTRATION=false`, explicit `CORS_ORIGINS`, PostgreSQL admin and application-role credentials, Redis credentials, and the required LLM credentials. Do not use the development `docker-compose.yml` in production.
+Production must set `ENVIRONMENT=production`, a random `SECRET_KEY` of at least 32 characters, a separate `DATA_ENCRYPTION_KEY`, `AUTO_CREATE_SCHEMA=false`, `ALLOW_SELF_REGISTRATION=false`, explicit `CORS_ORIGINS`, PostgreSQL admin and application-role credentials, Redis credentials, a specific Microsoft Entra tenant GUID/client/HTTPS redirect configuration, and the required LLM credentials. Schema changes are applied only by Alembic; do not use the development `docker-compose.yml` in production.
 
 ## Deployment
 
@@ -22,7 +22,7 @@ The performance migration creates the HNSW, full-text, permission-filter, and op
 
 Back up PostgreSQL and source storage together. Store encrypted copies off-host, define retention, and perform a scheduled restore into an isolated environment. A successful `pg_dump` alone is not a complete knowledge-base backup because originals are stored separately.
 
-For production, set `SOURCE_STORAGE_BACKEND=s3` (or another S3-compatible backend), `SOURCE_STORAGE_BUCKET`, and the required credentials. Enable `MALWARE_SCAN_ENABLED` only when the configured scanner command is installed and monitored. If local storage is retained, include the source volume in the backup and use durable replicated disks.
+For production, set `SOURCE_STORAGE_BACKEND=r2`, `SOURCE_STORAGE_BUCKET`, `R2_ACCOUNT_ID` (or `S3_ENDPOINT_URL=https://<account-id>.r2.cloudflarestorage.com`), and the required R2 credentials. Generic S3 endpoints and ambient AWS credentials are rejected; local-disk source storage is disabled. Enable `MALWARE_SCAN_ENABLED` only when the configured scanner command is installed and monitored.
 
 Set `OTEL_EXPORTER_OTLP_ENDPOINT` to enable distributed traces. Without it, the application remains operational with structured logs and the `/metrics` endpoint but does not emit external spans.
 

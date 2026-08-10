@@ -1,6 +1,30 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any
 from urllib.parse import urlparse
+import re
+
+
+def is_cloudflare_r2_endpoint(value: str | None) -> bool:
+    """Return whether a configured URL is a Cloudflare R2 S3 endpoint."""
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value.strip())
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return (
+        parsed.scheme == "https"
+        and bool(hostname)
+        and hostname.endswith(".r2.cloudflarestorage.com")
+        and hostname != "r2.cloudflarestorage.com"
+        and not parsed.username
+        and not parsed.password
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "QNSC Knowledge Base"
@@ -13,7 +37,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"
     CORS_ORIGINS: str = "http://localhost:5173"
     FRONTEND_URL: str = "http://localhost:5173"
-    AUTO_CREATE_SCHEMA: bool = True
+    # Schema lifecycle is owned exclusively by Alembic migrations.
+    AUTO_CREATE_SCHEMA: bool = False
     JOB_MODE: str = "inline"
     ENABLE_API_DOCS: bool = True
     ENABLE_RLS: bool = False
@@ -41,18 +66,34 @@ class Settings(BaseSettings):
     LLM_TIMEOUT_SECONDS: float = 90.0
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_VERSION: str = "bge-m3-v1"
+    CHUNKING_VERSION: str = "v2-structure-aware"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"
     RESTRUCTURE_ENABLED: bool = True
     RESTRUCTURE_MODEL: str | None = None
     RESTRUCTURE_MAX_CHARS: int = 60000
+    # Formatting is an optional enhancement. Keep review responsive and use
+    # the lossless local fallback when the configured provider is slow.
     RESTRUCTURE_TIMEOUT_SECONDS: float = 120.0
+    RESTRUCTURE_MAX_OUTPUT_TOKENS: int = 16384
+    RESTRUCTURE_NUMERIC_COVERAGE_THRESHOLD: float = 0.90
     AI_RATE_LIMIT_PER_MINUTE: int = 30
     VECTOR_DISTANCE_THRESHOLD: float = 0.45
     RAG_MIN_RELEVANCE_SCORE: float = 0.12
-    PROMPT_VERSION: str = "v1.1-definition-grounded"
-    RETRIEVAL_VERSION: str = "v1.2-passage-intent-rerank"
-    RERANKER_VERSION: str = "v1.1-definition-aware"
+    RAG_MIN_CONTEXT_SCORE: float = 0.35
+    RAG_CANDIDATE_POOL_SIZE: int = 48
+    RAG_RERANK_LIMIT: int = 16
+    RAG_MAX_CONTEXT_PARENTS: int = 8
+    RAG_CONTEXT_MAX_CHARS: int = 14000
+    RAG_CONTEXT_MAX_TOKENS: int = 3500
+    RAG_PARENT_CONTEXT_CHARS: int = 2400
+    RAG_MAX_PARENTS_PER_ARTICLE: int = 3
+    PROMPT_VERSION: str = "v2.0-grounded-extended-sections"
+    RETRIEVAL_VERSION: str = "v2-parent-budget-confidence"
+    RERANKER_VERSION: str = "v1.2-definition-aware"
+    RAG_ENABLE_EXTENDED_SECTION: bool = True
+    RAG_CACHE_EXTENDED_SECTION: bool = False
+    RAG_ALLOW_EXTENDED_ON_REFUSAL: bool = False
     OIDC_ISSUER_URL: str | None = None
     OIDC_CLIENT_ID: str | None = None
     OIDC_CLIENT_SECRET: str | None = None
@@ -62,6 +103,7 @@ class Settings(BaseSettings):
     MICROSOFT_CLIENT_SECRET: str | None = None
     MICROSOFT_TENANT_ID: str = "common"
     MICROSOFT_REDIRECT_URI: str | None = None
+    MICROSOFT_LOGIN_REDIRECT_URI: str | None = None
     GOOGLE_CLIENT_ID: str | None = None
     GOOGLE_CLIENT_SECRET: str | None = None
     GOOGLE_REDIRECT_URI: str | None = None
@@ -71,9 +113,13 @@ class Settings(BaseSettings):
     PADDLEOCR_LANG: str = "en"
     MARKITDOWN_ENABLED: bool = True
     SOURCE_STORAGE_PATH: str = "/app/storage/sources"
-    SOURCE_STORAGE_BACKEND: str = "local"
+    # MVP-1 stores originals in a private Cloudflare R2 bucket.  There is no
+    # local-disk fallback because a local fallback would make deployment
+    # topology part of the authorization boundary.
+    SOURCE_STORAGE_BACKEND: str = "r2"
     SOURCE_STORAGE_BUCKET: str | None = None
     SOURCE_STORAGE_PREFIX: str = "qnsc-sources"
+    SOURCE_ORPHAN_GRACE_HOURS: int = 24
     AWS_REGION: str | None = None
     S3_ENDPOINT_URL: str | None = None
     R2_ACCOUNT_ID: str | None = None
@@ -107,30 +153,52 @@ class Settings(BaseSettings):
             else:
                 self.EMBEDDING_DIMENSION = 1024
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", case_sensitive=True, extra="ignore"
+    )
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+        return [
+            origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()
+        ]
 
     def validate_production(self) -> None:
         if self.ENVIRONMENT.lower() not in {"production", "prod"}:
             return
-        if self.SECRET_KEY in {"", "super-secret-key-change-in-production"} or len(self.SECRET_KEY) < 32:
-            raise RuntimeError("SECRET_KEY must be a strong, externally supplied value in production")
+        if (
+            self.SECRET_KEY in {"", "super-secret-key-change-in-production"}
+            or len(self.SECRET_KEY) < 32
+        ):
+            raise RuntimeError(
+                "SECRET_KEY must be a strong, externally supplied value in production"
+            )
         if not self.DATA_ENCRYPTION_KEY or len(self.DATA_ENCRYPTION_KEY) < 32:
-            raise RuntimeError("DATA_ENCRYPTION_KEY must be a separate, strong externally supplied value in production")
-        if any(len(key.strip()) < 32 for key in self.PREVIOUS_DATA_ENCRYPTION_KEYS.split(",") if key.strip()):
-            raise RuntimeError("PREVIOUS_DATA_ENCRYPTION_KEYS entries must each be at least 32 characters")
+            raise RuntimeError(
+                "DATA_ENCRYPTION_KEY must be a separate, strong externally supplied value in production"
+            )
+        if any(
+            len(key.strip()) < 32
+            for key in self.PREVIOUS_DATA_ENCRYPTION_KEYS.split(",")
+            if key.strip()
+        ):
+            raise RuntimeError(
+                "PREVIOUS_DATA_ENCRYPTION_KEYS entries must each be at least 32 characters"
+            )
         if self.AUTO_CREATE_SCHEMA:
-            raise RuntimeError("AUTO_CREATE_SCHEMA must be false in production; use Alembic migrations")
+            raise RuntimeError(
+                "AUTO_CREATE_SCHEMA must be false in production; use Alembic migrations"
+            )
         if self.ALLOW_SELF_REGISTRATION:
             raise RuntimeError("ALLOW_SELF_REGISTRATION must be false in production")
         if self.ENABLE_API_DOCS:
             raise RuntimeError("ENABLE_API_DOCS must be false in production")
         cors_origins = self.cors_origin_list
         if not cors_origins or "*" in cors_origins:
-            raise RuntimeError("CORS_ORIGINS must contain explicit frontend origins in production")
+            raise RuntimeError(
+                "CORS_ORIGINS must contain explicit frontend origins in production"
+            )
+
         def normalized_https_origin(value: str, setting_name: str) -> str:
             try:
                 parsed = urlparse(value)
@@ -148,16 +216,23 @@ class Settings(BaseSettings):
                 or parsed.fragment
                 or parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
             ):
-                raise RuntimeError(f"{setting_name} must contain explicit HTTPS application origins in production")
+                raise RuntimeError(
+                    f"{setting_name} must contain explicit HTTPS application origins in production"
+                )
             host = parsed.hostname.lower()
             return f"https://{host}" + (f":{port}" if port and port != 443 else "")
 
         frontend_origin = normalized_https_origin(self.FRONTEND_URL, "FRONTEND_URL")
         if not frontend_origin:
-            raise RuntimeError("FRONTEND_URL must be an explicit HTTPS application origin in production")
-        normalized_cors = {normalized_https_origin(origin, "CORS_ORIGINS") for origin in cors_origins}
+            raise RuntimeError(
+                "FRONTEND_URL must be an explicit HTTPS application origin in production"
+            )
+        normalized_cors = {
+            normalized_https_origin(origin, "CORS_ORIGINS") for origin in cors_origins
+        }
         if frontend_origin not in normalized_cors:
             raise RuntimeError("CORS_ORIGINS must include FRONTEND_URL in production")
+
         def validated_https_url(value: str, setting_name: str) -> None:
             try:
                 parsed = urlparse(value)
@@ -170,26 +245,74 @@ class Settings(BaseSettings):
                 or parsed.password
                 or parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
             ):
-                raise RuntimeError(f"{setting_name} must use a public HTTPS URL in production")
+                raise RuntimeError(
+                    f"{setting_name} must use a public HTTPS URL in production"
+                )
 
         for setting_name, value in (
             ("MICROSOFT_REDIRECT_URI", self.MICROSOFT_REDIRECT_URI),
+            ("MICROSOFT_LOGIN_REDIRECT_URI", self.MICROSOFT_LOGIN_REDIRECT_URI),
             ("GOOGLE_REDIRECT_URI", self.GOOGLE_REDIRECT_URI),
             ("CONNECTOR_WEBHOOK_BASE_URL", self.CONNECTOR_WEBHOOK_BASE_URL),
         ):
             if value:
                 validated_https_url(value, setting_name)
-        if self.SOURCE_STORAGE_BACKEND.lower() in {"s3", "object", "object_storage", "r2", "cloudflare_r2"} and not self.SOURCE_STORAGE_BUCKET:
-            raise RuntimeError("SOURCE_STORAGE_BUCKET is required for object storage")
-        if self.SOURCE_STORAGE_BACKEND.lower() in {"r2", "cloudflare_r2"} and not (self.S3_ENDPOINT_URL or self.R2_ACCOUNT_ID):
-            raise RuntimeError("R2_ACCOUNT_ID or S3_ENDPOINT_URL is required for Cloudflare R2")
-        if self.SOURCE_STORAGE_BACKEND.lower() in {"r2", "cloudflare_r2"} and not (self.R2_ACCESS_KEY_ID and self.R2_SECRET_ACCESS_KEY):
-            raise RuntimeError("R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for Cloudflare R2")
-        if self.S3_ENDPOINT_URL:
-            validated_https_url(self.S3_ENDPOINT_URL, "S3_ENDPOINT_URL")
+        storage_backend = (self.SOURCE_STORAGE_BACKEND or "").strip().lower()
+        storage_bucket = (self.SOURCE_STORAGE_BUCKET or "").strip()
+        storage_endpoint = (self.S3_ENDPOINT_URL or "").strip()
+        storage_account = (self.R2_ACCOUNT_ID or "").strip()
+        storage_access_key = (self.R2_ACCESS_KEY_ID or "").strip()
+        storage_secret_key = (self.R2_SECRET_ACCESS_KEY or "").strip()
+        if storage_backend not in {"r2", "cloudflare_r2"}:
+            raise RuntimeError(
+                "SOURCE_STORAGE_BACKEND must be Cloudflare R2 in production"
+            )
+        if not storage_bucket:
+            raise RuntimeError("SOURCE_STORAGE_BUCKET is required for Cloudflare R2")
+        if not (storage_endpoint or storage_account):
+            raise RuntimeError(
+                "R2_ACCOUNT_ID or S3_ENDPOINT_URL is required for Cloudflare R2"
+            )
+        if not (storage_access_key and storage_secret_key):
+            raise RuntimeError(
+                "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY are required for Cloudflare R2"
+            )
+        if storage_endpoint:
+            validated_https_url(storage_endpoint, "S3_ENDPOINT_URL")
+            if not is_cloudflare_r2_endpoint(storage_endpoint):
+                raise RuntimeError("S3_ENDPOINT_URL must be a Cloudflare R2 endpoint")
+        if (
+            storage_account
+            and storage_account.lower().startswith(("http://", "https://"))
+            and not is_cloudflare_r2_endpoint(storage_account)
+        ):
+            raise RuntimeError(
+                "R2_ACCOUNT_ID endpoint must be a Cloudflare R2 endpoint"
+            )
         if not self.MALWARE_SCAN_ENABLED:
             raise RuntimeError("MALWARE_SCAN_ENABLED must be true in production")
         if not self.MALWARE_SCANNER_HOST:
             raise RuntimeError("MALWARE_SCANNER_HOST is required in production")
+        if not all(
+            value and value.strip()
+            for value in (
+                self.MICROSOFT_CLIENT_ID,
+                self.MICROSOFT_CLIENT_SECRET,
+                self.MICROSOFT_TENANT_ID,
+                self.MICROSOFT_REDIRECT_URI,
+                self.MICROSOFT_LOGIN_REDIRECT_URI,
+            )
+        ):
+            raise RuntimeError(
+                "Microsoft Entra client, tenant, and redirect settings are required in production"
+            )
+        if not re.fullmatch(
+            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}",
+            self.MICROSOFT_TENANT_ID.strip(),
+        ):
+            raise RuntimeError(
+                "MICROSOFT_TENANT_ID must be a specific Entra tenant GUID in production"
+            )
+
 
 settings = Settings()

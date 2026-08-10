@@ -24,6 +24,8 @@ class ParentChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     section_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)  # e.g., "Section 2.1"
+    chunk_type: Mapped[str] = mapped_column(String(40), nullable=False, default="section")
+    heading: Mapped[str | None] = mapped_column(String(255), nullable=True)
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     article: Mapped["Article"] = relationship("Article")
@@ -52,6 +54,9 @@ class ArticleChunk(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     visibility: Mapped[str] = mapped_column(String(50), nullable=False)
     
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_type: Mapped[str] = mapped_column(String(40), nullable=False, default="text")
+    heading: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    chunking_version: Mapped[str] = mapped_column(String(80), nullable=False, default="v1-fixed-character")
     page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     article: Mapped["Article"] = relationship("Article")

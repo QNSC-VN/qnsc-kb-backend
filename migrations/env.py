@@ -16,11 +16,46 @@ if config.config_file_name is not None:
 
 target_metadata = Base.metadata
 
+# A pre-Alembic deployment left this empty table behind. It is intentionally
+# retained for backward-compatible database handoff, but it is no longer part
+# of the application model and must not make every ``alembic check`` propose a
+# destructive drop. The connector scheduling column is retained in the ORM
+# model until an explicit data-retention decision is made.
+_LEGACY_TABLES = {"connector_credentials"}
+
+# These indexes are created by historical SQL migrations rather than ORM
+# declarations. They remain required for retrieval/audit performance and are
+# therefore excluded from metadata-diff removal proposals.
+_MIGRATION_MANAGED_INDEXES = {
+    "ix_ai_cache_expiry",
+    "ix_article_access_group_id",
+    "ix_article_chunks_article_id",
+    "ix_article_chunks_embedding_hnsw",
+    "ix_article_chunks_fts",
+    "ix_article_chunks_permission_lookup",
+    "ix_article_departments_department_id",
+    "ix_article_versions_article_id",
+    "ix_audit_logs_created_at",
+    "ix_document_sources_hash",
+    "ix_ingestion_fingerprints_draft_id",
+    "ix_user_departments_department_id",
+    "uq_department_managers_one_active_owner",
+}
+
+
+def include_object(object_, name, type_, reflected, compare_to):
+    if reflected and type_ == "table" and name in _LEGACY_TABLES:
+        return False
+    if reflected and type_ == "index" and name in _MIGRATION_MANAGED_INDEXES:
+        return False
+    return True
+
 def run_migrations_offline() -> None:
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
         target_metadata=target_metadata,
+        include_object=include_object,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
     )
@@ -29,7 +64,7 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 def do_run_migrations(connection):
-    context.configure(connection=connection, target_metadata=target_metadata)
+    context.configure(connection=connection, target_metadata=target_metadata, include_object=include_object)
 
     with context.begin_transaction():
         context.run_migrations()

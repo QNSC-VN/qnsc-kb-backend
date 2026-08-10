@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any
-from sqlalchemy import Table, Column, ForeignKey, String, Integer, Text, DateTime, JSON, UniqueConstraint, Boolean
+from sqlalchemy import Table, Column, ForeignKey, String, Integer, Text, DateTime, JSON, UniqueConstraint, Boolean, CheckConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
@@ -24,10 +24,13 @@ article_departments = Table(
 
 class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "articles"
-    __table_args__ = (UniqueConstraint("company_domain", "external_id", name="uq_articles_company_external_id"),)
+    __table_args__ = (
+        Index("ix_articles_external_id", "external_id", unique=True),
+        Index("uq_articles_company_external_id", "company_domain", "external_id", unique=True),
+    )
 
     title: Mapped[str] = mapped_column(String(255), nullable=False)
-    external_id: Mapped[str | None] = mapped_column(String(120), nullable=True, index=True)
+    external_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     body_md: Mapped[str] = mapped_column(Text, nullable=False)
     dept: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
@@ -36,12 +39,17 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     # public, internal, confidential, restricted
     sensitivity: Mapped[str] = mapped_column(String(50), default="internal", nullable=False)
+    # public: company-wide public content; department: governed by the
+    # article's department/ACL; users: only explicit ArticleUserPermission
+    # allow rows (subject to explicit deny precedence).
+    visibility: Mapped[str] = mapped_column(String(30), default="department", nullable=False)
     language: Mapped[str] = mapped_column(String(10), default="en", nullable=False)
     owner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     # draft, pending_review, published, archived
     status: Mapped[str] = mapped_column(String(50), default="draft", nullable=False)
     lifecycle_status: Mapped[str] = mapped_column(String(30), default="active", nullable=False, index=True)
     related_article_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    source_position: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     last_reviewed: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     next_review: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -62,6 +70,9 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     sources: Mapped[list["DocumentSource"]] = relationship(
         "DocumentSource", back_populates="article", cascade="all, delete-orphan"
     )
+    user_permissions: Mapped[list["ArticleUserPermission"]] = relationship(
+        "ArticleUserPermission", back_populates="article", cascade="all, delete-orphan", lazy="selectin"
+    )
     tags: Mapped[list["ArticleTag"]] = relationship(
         "ArticleTag", back_populates="article", cascade="all, delete-orphan"
     )
@@ -70,9 +81,17 @@ class Article(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     def source_available(self) -> bool:
         return any(source.storage_key for source in self.sources)
 
+    @property
+    def explicit_user_ids(self) -> list[uuid.UUID]:
+        return [item.user_id for item in self.user_permissions if item.effect == "allow" and item.source != "sharepoint"]
+
+    @property
+    def explicit_denied_user_ids(self) -> list[uuid.UUID]:
+        return [item.user_id for item in self.user_permissions if item.effect == "deny" and item.source != "sharepoint"]
+
 class ArticleVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "article_versions"
-    __table_args__ = (UniqueConstraint("article_id", "version", name="uq_article_versions_article_version"),)
+    __table_args__ = (Index("uq_article_versions_article_version", "article_id", "version", unique=True),)
 
     article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -81,6 +100,38 @@ class ArticleVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     article: Mapped[Article] = relationship("Article", back_populates="versions")
     editor: Mapped["User | None"] = relationship("User")
+
+
+class ArticleUserPermission(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Per-Article user override used by the explicit-user visibility mode.
+
+    ``effect=deny`` is intentionally represented even when another tier
+    grants access: deny is evaluated before every allow tier.
+    """
+
+    __tablename__ = "article_user_permissions"
+    __table_args__ = (
+        # Internal overrides and connector-managed grants are independent
+        # policy inputs. A partial unique index keeps one internal decision;
+        # the source-qualified index keeps one row per connector source.
+        Index(
+            "uq_article_user_permission_internal",
+            "article_id",
+            "user_id",
+            unique=True,
+            postgresql_where=(Column("source").is_(None)),
+        ),
+        Index("uq_article_user_permission_source", "article_id", "user_id", "source", unique=True),
+        CheckConstraint("effect IN ('allow', 'deny')", name="ck_article_user_permission_effect"),
+    )
+
+    article_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    effect: Mapped[str] = mapped_column(String(10), nullable=False, default="allow")
+    source: Mapped[str | None] = mapped_column(String(40), nullable=True)
+
+    article: Mapped[Article] = relationship("Article", back_populates="user_permissions")
+    user: Mapped["User"] = relationship("User")
 
 class ArticleTag(Base, UUIDPrimaryKeyMixin):
     __tablename__ = "article_tags"

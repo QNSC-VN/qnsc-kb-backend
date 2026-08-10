@@ -7,6 +7,7 @@ from src.domain.llm_config import DEFAULT_BASE_URLS
 
 def test_llm_endpoint_uses_the_provider_default_when_omitted():
     assert _clean_base_url("openai", None) == DEFAULT_BASE_URLS["openai"]
+    assert DEFAULT_BASE_URLS["glm"] == "https://api.z.ai/api/coding/paas/v4/chat/completions"
 
 
 @pytest.mark.parametrize(
