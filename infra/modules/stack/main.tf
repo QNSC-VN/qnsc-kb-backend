@@ -509,6 +509,15 @@ module "migrator" {
     // whom to grant to, and by scripts/bootstrap_db_role.py to create that role.
     ENABLE_RLS        = "true"
     APP_DATABASE_ROLE = var.app_db_role
+
+    // The migrations own the pgvector COLUMN WIDTH, and the width is derived from
+    // EMBEDDING_MODEL. Left unset here, the migrator fell back to the code default while
+    // the api and worker used this variable, and the column was created 1024 wide for a
+    // model that emits 768 — every chunk then failed to index with
+    // "expected 1024 dimensions, not 768". Same value as common_env, deliberately: the
+    // task that shapes the column and the tasks that fill it must agree.
+    EMBEDDING_MODEL   = var.embedding_model
+    EMBEDDING_VERSION = var.embedding_version
   }
 
   secrets = {
