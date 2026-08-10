@@ -155,7 +155,12 @@ locals {
 
     { name = "FRONTEND_URL", value = local.app_base_url },
     { name = "CORS_ORIGINS", value = local.app_base_url },
-    { name = "CONNECTOR_WEBHOOK_BASE_URL", value = "${local.api_base_url}/api/v1/connectors" },
+    // The API ORIGIN, with no path. connectors.py builds the notification URL as
+    // "<this>/api/v1/connectors/webhooks/<system>", so including the path here produced
+    // .../api/v1/connectors/api/v1/connectors/webhooks/sharepoint — and Microsoft Graph
+    // POSTs a validationToken to that URL while CREATING the subscription, so enabling
+    // update notifications failed outright rather than going quietly stale.
+    { name = "CONNECTOR_WEBHOOK_BASE_URL", value = local.api_base_url },
 
     { name = "MICROSOFT_CLIENT_ID", value = var.microsoft_client_id },
     { name = "MICROSOFT_TENANT_ID", value = var.microsoft_tenant_id },

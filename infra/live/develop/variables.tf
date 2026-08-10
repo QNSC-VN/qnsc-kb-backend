@@ -44,8 +44,21 @@ variable "cloudflare_account_id" {
 
 variable "microsoft_client_id" {
   type        = string
-  default     = ""
+  default     = "dbd99dbb-d20e-4076-8f8b-75c15e733414"
   description = "Entra application (client) ID for the Microsoft connector. A public identifier. Empty leaves that connector dormant."
+}
+
+variable "microsoft_tenant_id" {
+  type        = string
+  default     = "dc0f2078-ac28-4ff2-b21a-d4b28df32361"
+  description = <<-EOT
+    The QNSC Entra tenant, NOT "common".
+
+    The connector requests DELEGATED Graph scopes, so whoever completes the OAuth flow
+    connects THEIR SharePoint. Under "common" that is any user in any Microsoft tenant on
+    earth, and their documents would be ingested into this knowledge base. Pinning the
+    tenant is what limits the flow to qnsc.vn accounts.
+  EOT
 }
 
 variable "google_client_id" {

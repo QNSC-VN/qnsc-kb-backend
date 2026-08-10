@@ -38,6 +38,13 @@ celery_app.conf.update(
             "task": "schedule_cloud_connector_syncs",
             "schedule": 600.0,
         },
+        # Graph drive subscriptions expire an hour after they are created, and a lapsed
+        # one fails silently — the provider just stops calling. Every 10 minutes against
+        # a 20-minute horizon, so several attempts land before any subscription expires.
+        "renew-webhook-subscriptions": {
+            "task": "renew_webhook_subscriptions",
+            "schedule": 600.0,
+        },
         "prune-operational-metrics": {
             "task": "prune_operational_metrics",
             "schedule": 86400.0,

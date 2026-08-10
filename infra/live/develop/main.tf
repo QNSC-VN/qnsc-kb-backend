@@ -182,6 +182,7 @@ module "stack" {
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id
   microsoft_client_id   = var.microsoft_client_id
+  microsoft_tenant_id   = var.microsoft_tenant_id
   google_client_id      = var.google_client_id
   allowed_email_domains = var.allowed_email_domains
 }
