@@ -58,7 +58,11 @@ class Settings(BaseSettings):
     # host. Keep that capability opt-in, even for global administrators.
     LLM_ALLOW_CUSTOM_BASE_URL: bool = False
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemma-4-26b-a4b-it"
+    # A floating `-latest` alias, not a pinned version. Google retires pinned models for
+    # new API keys — the deployed default was gemini-2.5-flash-lite, and every call
+    # returned 404 "no longer available to new users". Nothing validates a model name at
+    # startup, so it surfaced as broken AI answers, not as a failed deploy.
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
     GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     GEMINI_THINKING_LEVEL: str = "minimal"
     GEMINI_MAX_OUTPUT_TOKENS: int = 8192

@@ -229,26 +229,46 @@ variable "malware_scan_enabled" {
 
 variable "embedding_model" {
   type        = string
-  default     = "BAAI/bge-m3"
+  default     = "gemini-embedding-001"
   description = <<-EOT
-    Must match the model baked into the image (the Dockerfile's EMBEDDING_MODEL build
-    arg). A mismatch is not an error: the task downloads the other model on first use,
-    which is the multi-minute cold start the bake exists to prevent.
+    Determines EMBEDDING_DIMENSION, which fixes the pgvector column width and the HNSW
+    index at migration time. Changing it later requires a migration AND a full re-embed
+    of every chunk: vectors of different widths are not comparable, and a query embedded
+    by one model against chunks embedded by another returns nonsense without erroring.
 
-    It also determines EMBEDDING_DIMENSION, which fixes the pgvector column width and
-    the HNSW index at migration time. Changing it later requires a migration and a full
-    re-embed of every chunk.
+    This value must reach the MIGRATOR as well as the api and worker — the migrator is
+    what creates the column. It did not, once, and the column was built 1024 wide for a
+    model that emits 768.
+
+    The old default was BAAI/bge-m3, a local SentenceTransformer baked into the image.
+    That is gone: embeddings are a hosted API call now, which is what removed torch and
+    2.3 GB of weights from a container whose job was to embed a search query.
   EOT
 }
 
 variable "embedding_version" {
-  type    = string
-  default = "bge-m3-v1"
+  type        = string
+  default     = "gemini-embedding-001-768-v1"
+  description = "Stamped on every chunk, so a re-embed can be identified after the fact. Change it whenever embedding_model or the dimension changes."
 }
 
 variable "gemini_model" {
-  type    = string
-  default = "gemini-2.5-flash-lite"
+  type        = string
+  default     = "gemini-flash-lite-latest"
+  description = <<-EOT
+    The text GENERATION model (RAG answers), not the embedding model.
+
+    A floating `-latest` alias on purpose. The previous default pinned
+    gemini-2.5-flash-lite, and Google retired that whole family for new keys — every
+    generateContent call returned 404 "no longer available to new users", which surfaces
+    as broken AI features rather than as a deploy failure, because nothing validates a
+    model name at apply time. An alias survives that; the cost is that the model can move
+    under you, which retrieval quality is far more tolerant of than a dead endpoint.
+
+    Verify a change before applying it:
+      curl -s -X POST "https://generativelanguage.googleapis.com/v1beta/models/MODEL:generateContent?key=KEY" \
+        -H 'Content-Type: application/json' -d '{"contents":[{"parts":[{"text":"hi"}]}]}'
+  EOT
 }
 
 variable "microsoft_tenant_id" {
