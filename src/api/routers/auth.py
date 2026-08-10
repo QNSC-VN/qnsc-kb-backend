@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, status, HTTPException, Query, Request, Response, Cookie
 from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from jose import JWTError, jwt
+import jwt
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.deps import get_db, get_current_user, require_permission, set_database_context
@@ -304,13 +304,13 @@ def _refresh_claims_from_token(refresh_value: str) -> dict[str, Any]:
     try:
         payload = jwt.decode(refresh_value, settings.SECRET_KEY, algorithms=["HS256"])
         if payload.get("type") != "refresh" or not isinstance(payload.get("sub"), str):
-            raise JWTError("Not a refresh token")
+            raise jwt.InvalidTokenError("Not a refresh token")
         subject = payload["sub"].strip().lower()
         if "@" not in subject:
-            raise JWTError("Invalid refresh subject")
+            raise jwt.InvalidTokenError("Invalid refresh subject")
         payload["sub"] = subject
         return payload
-    except JWTError as exc:
+    except jwt.PyJWTError as exc:
         raise HTTPException(status_code=401, detail="Refresh token is invalid or expired") from exc
 
 
@@ -1128,10 +1128,10 @@ async def entra_callback(
     try:
         state_claims = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])
         if state_claims.get("type") != "entra_login" or not state_claims.get("nonce"):
-            raise JWTError("Invalid Entra login state")
+            raise jwt.InvalidTokenError("Invalid Entra login state")
         tokens = await entra_auth.exchange_code(code)
         claims = await entra_auth.verify_id_token(str(tokens.get("id_token") or ""), str(state_claims["nonce"]))
-    except (JWTError, ValueError, KeyError) as exc:
+    except (jwt.PyJWTError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=401, detail="Microsoft sign-in could not be verified") from exc
     email = str(claims["email"]).lower()
     await set_database_context(db, email.rsplit("@", 1)[1])

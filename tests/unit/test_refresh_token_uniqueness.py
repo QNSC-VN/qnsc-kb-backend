@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 
-from jose import jwt
+import jwt
 
 from src.core.config import settings
 from src.core.security import create_refresh_token
