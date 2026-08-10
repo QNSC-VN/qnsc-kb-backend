@@ -35,9 +35,14 @@ RUN pip install --no-cache-dir poetry && \
 # ---------------------------------------------------------------------------
 # runtime — the common layer under all three targets.
 #
-# Application code is COPYed here rather than per-target so the three images share
-# every layer up to this point; ECR then stores one copy of the ~GB dependency
-# layers instead of three.
+# DELIBERATELY CONTAINS NO APPLICATION CODE. Docker invalidates every layer above a
+# changed one, so anything expensive must sit BELOW the thing that changes on every
+# commit. The application is copied per-target, last.
+#
+# This ordering was wrong to begin with and it was expensive: `COPY . .` lived here and
+# the model bake sat on top, so each commit produced a fresh 2.3 GB weights layer. Three
+# repositories reached 81.6 GB across 21 builds — layer reuse is a property of the
+# ordering, not of the registry.
 # ---------------------------------------------------------------------------
 FROM python:3.11-slim AS runtime
 
@@ -54,8 +59,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=deps /usr/local/bin /usr/local/bin
-
-COPY . .
 
 RUN useradd --create-home --uid 10001 appuser && \
     mkdir -p /app/storage/sources /app/storage/connectors && \
@@ -77,6 +80,9 @@ RUN useradd --create-home --uid 10001 appuser && \
 # EMBEDDING_MODEL must match the runtime setting of the same name. A mismatch is not
 # an error — it silently downloads the other model at first use, which is the exact
 # cold start this stage exists to remove.
+#
+# Built on `runtime`, which carries NO application code, so this layer is invalidated
+# only by a dependency or model change — not by every commit.
 # ---------------------------------------------------------------------------
 FROM runtime AS model-cache
 
@@ -104,6 +110,9 @@ RUN mkdir -p "$HF_HOME" && \
 # ---------------------------------------------------------------------------
 FROM model-cache AS api
 
+# Last, and small: everything above is shared with the worker and reused across commits.
+COPY --chown=appuser:appuser . .
+
 USER appuser
 
 EXPOSE 8000
@@ -124,6 +133,8 @@ CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # ---------------------------------------------------------------------------
 FROM model-cache AS worker
 
+COPY --chown=appuser:appuser . .
+
 USER appuser
 
 CMD ["celery", "-A", "src.workers.celery_app", "worker", "--loglevel=info", \
@@ -137,6 +148,8 @@ CMD ["celery", "-A", "src.workers.celery_app", "worker", "--loglevel=info", \
 # the embedding weights and does not need them baked in.
 # ---------------------------------------------------------------------------
 FROM runtime AS migrator
+
+COPY --chown=appuser:appuser . .
 
 USER appuser
 
