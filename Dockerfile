@@ -50,7 +50,11 @@ RUN pip install --no-cache-dir poetry && \
 # ---------------------------------------------------------------------------
 FROM deps AS deps-ocr
 
-RUN poetry install --no-root --only main --with ocr
+# `--only main,ocr`, NOT `--only main --with ocr`. `--only` is an exhaustive list, so
+# combining the two silently installs main alone — the worker shipped the same size as
+# the migrator, and OCR would have failed at runtime on the first scanned file rather
+# than at build time.
+RUN poetry install --no-root --only main,ocr
 
 # ---------------------------------------------------------------------------
 # runtime — common base. NO application code: see rule 1 above.
