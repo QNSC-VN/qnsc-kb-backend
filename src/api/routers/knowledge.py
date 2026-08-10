@@ -109,3 +109,5 @@ async def role_preview(request: RolePreviewRequest, current_user: User = Depends
     await AuditRepository(db).record(current_user.id, "role_preview", "user", str(current_user.id))
     return {"role": request.role, "dept": request.dept, "read_only": True,
             "message": "Preview metadata only; authenticated-user permissions remain authoritative."}
+
+# Touched by the repo-config verification PR — proves the labeler maps src/api/** to area/api.
