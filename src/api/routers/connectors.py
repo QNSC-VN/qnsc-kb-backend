@@ -3,7 +3,7 @@ import hashlib
 import hmac
 import json
 from datetime import datetime, timedelta
-from jose import JWTError, jwt
+import jwt
 from typing import Any, Literal
 from urllib.parse import urlencode
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
@@ -314,10 +314,10 @@ async def oauth_callback(
     try:
         claims = jwt.decode(state, settings.SECRET_KEY, algorithms=["HS256"])
         if claims.get("type") != "connector_oauth":
-            raise JWTError("invalid connector state")
+            raise jwt.InvalidTokenError("invalid connector state")
         connector_id = uuid.UUID(str(claims["connector_id"]))
         initiator_id = uuid.UUID(str(claims["user_id"]))
-    except (JWTError, KeyError, ValueError) as exc:
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail="OAuth state is invalid or expired") from exc
     # Provider callbacks are authenticated by the short-lived signed state,
     # not a browser session.  Use explicit internal context so RLS can safely
@@ -334,9 +334,9 @@ async def oauth_callback(
         raise HTTPException(status_code=403, detail="The user who started this authorization no longer has connector access")
     try:
         if claims.get("connector_id") != str(connector.id):
-            raise JWTError("invalid connector state")
+            raise jwt.InvalidTokenError("invalid connector state")
         tokens = await adapter_for(connector).exchange_code(code)
-    except (JWTError, ConnectorProviderError) as exc:
+    except (jwt.PyJWTError, ConnectorProviderError) as exc:
         connector.status = "auth_failed"
         connector.last_error = str(exc)
         await db.commit()
@@ -347,7 +347,7 @@ async def oauth_callback(
     if tokens.get("id_token"):
         try:
             subject = str(jwt.get_unverified_claims(tokens["id_token"]).get("sub") or subject)
-        except JWTError:
+        except jwt.PyJWTError:
             pass
     connector.oauth_subject = subject[:255]
     if tokens.get("expires_in"):

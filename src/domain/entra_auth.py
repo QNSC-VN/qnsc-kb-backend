@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
-from jose import jwk, jwt
+import jwt
 
 from src.core.config import settings
 
@@ -71,7 +71,11 @@ async def exchange_code(code: str) -> dict[str, Any]:
 async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
     """Verify signature, audience, nonce, and tenant claims before mapping."""
     unverified_header = jwt.get_unverified_header(id_token)
-    unverified_claims = jwt.get_unverified_claims(id_token)
+    # PyJWT has no get_unverified_claims(); decoding with verify_signature off is the
+    # documented equivalent, and it disables the other verifications too — which is what
+    # we want, since these claims are only used to pick the signing key and are re-read
+    # from the VERIFIED payload below.
+    unverified_claims = jwt.decode(id_token, options={"verify_signature": False})
     kid = str(unverified_header.get("kid") or "")
     if not kid:
         raise ValueError("Microsoft ID token has no key identifier")
@@ -88,8 +92,8 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
         raise ValueError("Microsoft signing key is unknown")
     # Entra's JWKS can omit the optional `alg` member. The token header was
     # already validated as RS256 above, so pass that validated algorithm
-    # explicitly instead of asking python-jose to infer it from the key.
-    key = jwk.construct(key_data, algorithm=algorithm)
+    # explicitly instead of asking PyJWT to infer it from the key.
+    key = jwt.PyJWK.from_dict(key_data, algorithm=algorithm).key
     claims = jwt.decode(
         id_token,
         key,
