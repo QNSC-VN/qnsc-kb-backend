@@ -121,8 +121,8 @@ module "stack" {
   // and a broken response mid-answer. The worker takes Spot deliberately — Celery
   // redelivers an interrupted task, so an interruption costs time rather than work.
   api = {
-    cpu                = 1024
-    memory             = 4096
+    cpu                = 512
+    memory             = 1024
     min_count          = 0
     max_count          = 6
     enable_autoscaling = false
@@ -135,8 +135,8 @@ module "stack" {
   // every scheduled job. Splitting beat into its own service is the prerequisite for
   // scaling the worker horizontally, and the stack module's validation enforces it.
   worker = {
-    cpu                = 2048
-    memory             = 8192
+    cpu                = 1024
+    memory             = 4096
     min_count          = 0
     max_count          = 1
     enable_autoscaling = false
@@ -198,11 +198,11 @@ module "stack" {
 
   malware_scan_enabled = true
 
-  // Must match the weights baked into the image, and must match develop: a different
-  // model writes vectors of a different width that the other environment cannot
-  // compare against. Fixed at migration time by the pgvector column and the HNSW index.
-  embedding_model   = "BAAI/bge-m3"
-  embedding_version = "bge-m3-v1"
+  // Must match develop. A different model writes vectors of a different width, and even
+  // at the same width the spaces are unrelated — the comparison would not error, it would
+  // just return nonsense. Fixed at migration time by the pgvector column and HNSW index.
+  embedding_model   = "text-embedding-004"
+  embedding_version = "gemini-text-embedding-004-v1"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id

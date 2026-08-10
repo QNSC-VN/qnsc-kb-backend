@@ -80,7 +80,7 @@ module "ecr" {
   # Re-run `aws ecr start-lifecycle-policy-preview` (a dry run) before changing these; it
   # is the only way to see what a policy will delete.
   keep_release_count = 10
-  keep_build_count   = 10
+  keep_build_count   = 5
 
   repository_names     = ["qnsc-kb-api", "qnsc-kb-worker", "qnsc-kb-migrator"]
   image_tag_mutability = "MUTABLE" # allows re-tagging :latest

@@ -63,8 +63,16 @@ class Settings(BaseSettings):
     GEMINI_THINKING_LEVEL: str = "minimal"
     GEMINI_MAX_OUTPUT_TOKENS: int = 8192
     LLM_TIMEOUT_SECONDS: float = 90.0
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    EMBEDDING_VERSION: str = "bge-m3-v1"
+    # Hosted by default. A local model (bge-*, minilm) needs the optional `ml` dependency
+    # group and would have to be loaded by the API as well as the worker, because the API
+    # embeds the search query — which is what made the API image 3.5 GB.
+    #
+    # This value fixes EMBEDDING_DIMENSION, which fixes the pgvector column width and the
+    # HNSW index AT MIGRATION TIME. Changing it later needs a migration and a full
+    # re-embed: a query and a chunk embedded by different models are points in unrelated
+    # spaces, and their distance is meaningless rather than merely wrong.
+    EMBEDDING_MODEL: str = "text-embedding-004"
+    EMBEDDING_VERSION: str = "gemini-text-embedding-004-v1"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"
     RESTRUCTURE_ENABLED: bool = True
@@ -153,6 +161,8 @@ class Settings(BaseSettings):
                 self.EMBEDDING_DIMENSION = 384
             elif "text-embedding-3-small" in model or "ada-002" in model:
                 self.EMBEDDING_DIMENSION = 1536
+            elif "text-embedding-004" in model or "embedding-001" in model:
+                self.EMBEDDING_DIMENSION = 768
             else:
                 self.EMBEDDING_DIMENSION = 1024
 
