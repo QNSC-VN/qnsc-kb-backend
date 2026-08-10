@@ -121,6 +121,31 @@ async def test_an_expired_token_is_rejected(signing_key):
 
 
 @pytest.mark.asyncio
+async def test_a_token_from_another_tenant_is_rejected(signing_key):
+    """Tenant validation moved AFTER signature verification — prove it still bites.
+
+    It used to run on claims read before the signature was checked. Nothing required
+    that: the JWKS is fetched from the CONFIGURED tenant, so the only pre-verification
+    reads needed are `kid` and `alg` from the header.
+    """
+    other = "11111111-2222-3333-4444-555555555555"
+    token = _id_token(
+        signing_key, tid=other, iss=f"https://login.microsoftonline.com/{other}/v2.0"
+    )
+
+    with pytest.raises(ValueError, match="tenant"):
+        await entra_auth.verify_id_token(token, NONCE)
+
+
+@pytest.mark.asyncio
+async def test_a_token_with_a_forged_issuer_is_rejected(signing_key):
+    token = _id_token(signing_key, iss="https://login.microsoftonline.com/evil/v2.0")
+
+    with pytest.raises(ValueError, match="issuer"):
+        await entra_auth.verify_id_token(token, NONCE)
+
+
+@pytest.mark.asyncio
 async def test_a_token_signed_by_a_different_key_is_rejected(signing_key):
     """Signature verification is real: the JWKS key must be the one that signed it."""
     impostor = rsa.generate_private_key(public_exponent=65537, key_size=2048)

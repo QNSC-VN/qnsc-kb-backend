@@ -70,22 +70,19 @@ async def exchange_code(code: str) -> dict[str, Any]:
 
 async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
     """Verify signature, audience, nonce, and tenant claims before mapping."""
+    # ONLY the header is read before the signature is checked, and only for the two
+    # values that are needed to find the key at all: which key signed it, and with what
+    # algorithm. The tenant and issuer claims are validated further down, against the
+    # VERIFIED payload — python-jose's get_unverified_claims() invited reading them here,
+    # but nothing actually requires it: the JWKS below is fetched from the CONFIGURED
+    # tenant, never from a tenant the token asks for.
     unverified_header = jwt.get_unverified_header(id_token)
-    # PyJWT has no get_unverified_claims(); decoding with verify_signature off is the
-    # documented equivalent, and it disables the other verifications too.
-    #
-    # Reading claims before the signature is checked is unavoidable here and safe as used:
-    # `tid` decides WHICH tenant's signing keys to fetch, so it is needed before there is
-    # a key to verify with. Nothing from this dict is trusted — `_validate_id_token_metadata`
-    # only uses it to reject a token before any network call, and every claim the caller
-    # acts on (subject, email, nonce) is re-read from the VERIFIED payload below.
-    #
-    # nosemgrep: python.jwt.security.unverified-jwt-decode.unverified-jwt-decode
-    unverified_claims = jwt.decode(id_token, options={"verify_signature": False})
     kid = str(unverified_header.get("kid") or "")
     if not kid:
         raise ValueError("Microsoft ID token has no key identifier")
-    algorithm, _tenant_id = _validate_id_token_metadata(unverified_header, unverified_claims)
+    algorithm = str(unverified_header.get("alg") or "")
+    if algorithm != "RS256":
+        raise ValueError("Microsoft ID token algorithm is not allowed")
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, trust_env=False) as client:
         response = await client.get(
             f"https://login.microsoftonline.com/{settings.MICROSOFT_TENANT_ID}/discovery/v2.0/keys"
@@ -107,6 +104,10 @@ async def verify_id_token(id_token: str, expected_nonce: str) -> dict[str, Any]:
         audience=settings.MICROSOFT_CLIENT_ID,
         options={"verify_iss": False},
     )
+    # Tenant and issuer are checked HERE, on the verified payload, rather than on a
+    # pre-signature read of the same claims. Same rules, applied to data an attacker
+    # cannot author.
+    _validate_id_token_metadata(unverified_header, claims)
     if claims.get("nonce") != expected_nonce:
         raise ValueError("Microsoft ID token nonce is invalid")
     subject = str(claims.get("oid") or claims.get("sub") or "").strip()
