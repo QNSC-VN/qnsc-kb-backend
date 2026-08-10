@@ -4,6 +4,13 @@ from urllib.parse import quote, urlparse
 import re
 
 
+# The password the bootstrap administrator gets when nothing else is configured. It is
+# written down in this repository on purpose — a local checkout should just work — which
+# is exactly why validate_production refuses to start with it. Defined here rather than
+# beside the bootstrap code so that check has no import cycle to reach it.
+DEVELOPMENT_DEFAULT_PASSWORD = "Admin123@"
+
+
 def is_cloudflare_r2_endpoint(value: str | None) -> bool:
     """Return whether a configured URL is a Cloudflare R2 S3 endpoint."""
     if not value:
@@ -155,6 +162,18 @@ class Settings(BaseSettings):
     CONNECTOR_WEBHOOK_BASE_URL: str | None = None
     ALLOWED_EMAIL_DOMAINS: str = ""
     ALLOW_SELF_REGISTRATION: bool = True
+
+    # The first global administrator, created at API startup when the deployment has none
+    # — see src/domain/admin_bootstrap.py. A migrated database has no users and there is
+    # no signup route, so without this a fresh deployment is unreachable by anyone.
+    #
+    # BOOTSTRAP_ADMIN_PASSWORD keeps its development default only outside production;
+    # validate_production refuses to start with it, so a public deployment supplies its
+    # own or does not come up.
+    BOOTSTRAP_ADMIN_ENABLED: bool = True
+    BOOTSTRAP_ADMIN_EMAIL: str = "admin@qnsc.vn"
+    BOOTSTRAP_ADMIN_NAME: str = "Admin"
+    BOOTSTRAP_ADMIN_PASSWORD: str = DEVELOPMENT_DEFAULT_PASSWORD
     PADDLEOCR_LANG: str = "en"
     MARKITDOWN_ENABLED: bool = True
     SOURCE_STORAGE_PATH: str = "/app/storage/sources"
@@ -388,6 +407,29 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "MICROSOFT_TENANT_ID must be a specific Entra tenant GUID in production"
             )
+
+        # LAST on purpose. This is the newest check, and putting it earlier made it
+        # shadow every one above: a settings object left deliberately broken to exercise
+        # the CORS or R2 rule would fail on the bootstrap password instead, and the rule
+        # actually under test would go unverified.
+        if self.BOOTSTRAP_ADMIN_ENABLED:
+            # The account this creates is a GLOBAL administrator: it bypasses tenant RLS
+            # and can read every company's data. A password that ships in this repository
+            # would make that reachable by anyone who can read GitHub and find the host.
+            if self.BOOTSTRAP_ADMIN_PASSWORD == DEVELOPMENT_DEFAULT_PASSWORD:
+                raise RuntimeError(
+                    "BOOTSTRAP_ADMIN_PASSWORD must be set in production; it is still the "
+                    "development default. Set BOOTSTRAP_ADMIN_ENABLED=false if this "
+                    "deployment provisions its administrator some other way."
+                )
+            if len(self.BOOTSTRAP_ADMIN_PASSWORD) < 12:
+                raise RuntimeError(
+                    "BOOTSTRAP_ADMIN_PASSWORD must be at least 12 characters in production"
+                )
+            if "@" not in self.BOOTSTRAP_ADMIN_EMAIL:
+                raise RuntimeError(
+                    "BOOTSTRAP_ADMIN_EMAIL must be an email address in production"
+                )
 
 
 settings = Settings()

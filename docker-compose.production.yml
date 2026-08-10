@@ -96,6 +96,14 @@ services:
       R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
       R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
       ALLOW_SELF_REGISTRATION: "false"
+      # The api creates this global administrator on first start, because there is no
+      # signup route and a migrated database has no users. `:?set` rather than a default:
+      # the app refuses to start in production with the password published in
+      # .env.example, so an unset value must fail here, loudly, before the image runs.
+      BOOTSTRAP_ADMIN_ENABLED: ${BOOTSTRAP_ADMIN_ENABLED:-true}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?set BOOTSTRAP_ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?set BOOTSTRAP_ADMIN_PASSWORD}
       CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS}
       FRONTEND_URL: ${FRONTEND_URL:?set FRONTEND_URL}
       DATABASE_URL: postgresql+asyncpg://${APP_DATABASE_USER:-qnsc_app}:${APP_DATABASE_PASSWORD:?set APP_DATABASE_PASSWORD}@db:5432/${POSTGRES_DB:-qnsc_kb}

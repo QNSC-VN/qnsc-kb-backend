@@ -8,6 +8,7 @@ from src.core.config import settings
 from src.models import User
 from src.repositories.user import UserRepository
 from src.domain.rbac import AuthorizationService, bootstrap_rbac
+from src.domain.admin_bootstrap import ensure_bootstrap_admin
 from src.domain.llm_config import load_runtime_config
 
 engine = create_async_engine(
@@ -32,6 +33,12 @@ async def init_db() -> None:
         # remain able to seed roles after production RLS has been migrated.
         await set_database_context(db, None, True)
         await bootstrap_rbac(db)
+        # After bootstrap_rbac, which is what creates the global Admin role this attaches,
+        # and inside the same global-admin RLS context — the identity policies FORCE row
+        # security on the owner too, so without the bypass above the insert would be
+        # filtered rather than rejected and the startup would report success having
+        # written nothing.
+        await ensure_bootstrap_admin(db)
         await load_runtime_config(db)
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
