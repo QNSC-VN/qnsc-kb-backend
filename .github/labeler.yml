@@ -1,0 +1,41 @@
+# PR auto-labeler config — maps changed paths to labels.
+# Used by the labeler workflow (.github/workflows/labeler.yml).
+#
+# Labels must already EXIST in the repo; the action applies them, it does not create
+# them. Paths mirror this repository's layout, not rally's monorepo — a copied config
+# would silently label nothing, because "apps/api/**" matches no file here.
+
+area/api:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "src/api/**"
+      - "src/rag/**"
+
+area/worker:
+  - changed-files:
+    - any-glob-to-any-file: "src/workers/**"
+
+area/db:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "migrations/**"
+      - "src/models/**"
+      - "src/repositories/**"
+
+area/infra:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "infra/**"
+      - "docker/**"
+      - "Dockerfile"
+      - "docker-compose*.yml"
+
+area/ci:
+  - changed-files:
+    - any-glob-to-any-file: ".github/**"
+
+area/docs:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "docs/**"
+      - "**/*.md"
