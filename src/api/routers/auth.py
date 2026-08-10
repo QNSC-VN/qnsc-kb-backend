@@ -1,8 +1,10 @@
 import uuid
 import hashlib
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Any
 from fastapi import APIRouter, Body, Depends, status, HTTPException, Query, Request, Response, Cookie
+from fastapi.responses import RedirectResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
@@ -11,6 +13,7 @@ from src.api.deps import get_db, get_current_user, require_permission, set_datab
 from src.repositories.user import UserRepository
 from src.domain.auth import AuthService
 from src.core.config import settings
+from src.core.security import get_password_hash
 from src.repositories.audit import AuditRepository
 from src.models.rbac import Permission, Role, RolePermission
 from src.models.user import AccessGroup, Department, DepartmentManager, User, user_departments
@@ -1105,11 +1108,10 @@ async def entra_login() -> dict[str, str]:
     return {"authorization_url": entra_auth.authorization_url(state, nonce), "state_expires_in": "600"}
 
 
-@router.get("/entra/callback", response_model=TokenResponse, response_model_exclude_none=True)
+@router.get("/entra/callback")
 async def entra_callback(
     code: str,
     state: str,
-    response: Response,
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     """Exchange and verify Entra claims, then link to an existing account."""
@@ -1130,7 +1132,27 @@ async def entra_callback(
         ExternalIdentity.subject == str(claims["subject"]),
     ))).scalar_one_or_none()
     user = await UserRepository(db).get_by_id(identity.user_id) if identity else await UserRepository(db).get_by_email(email)
-    if not user or not user.active:
+    if user is None:
+        domain = email.rsplit("@", 1)[1]
+        allowed_domain = settings.ENTRA_AUTO_PROVISION_DOMAIN.strip().lower()
+        if domain != allowed_domain:
+            raise HTTPException(status_code=403, detail="Your Microsoft account is not eligible for automatic KB provisioning")
+        user = User(
+            email=email,
+            name=str(claims.get("name") or email.rsplit("@", 1)[0]).strip()[:255],
+            password_hash=get_password_hash(secrets.token_urlsafe(32)),
+            company_domain=domain,
+            role="Staff",
+            active=True,
+        )
+        db.add(user)
+        await db.flush()
+        await bootstrap_rbac(db)
+        user = await UserRepository(db).get_by_id(user.id)
+        if user is None:
+            raise HTTPException(status_code=500, detail="Could not provision the Microsoft account")
+        await AuditRepository(db).record(user.id, "entra_user_provision", "user", str(user.id), outcome="success")
+    if not user.active:
         raise HTTPException(status_code=403, detail="Your Microsoft account is not linked to an active internal KB account")
     if user.email.lower() != email:
         raise HTTPException(status_code=403, detail="The Microsoft account email does not match the linked internal account")
@@ -1151,5 +1173,9 @@ async def entra_callback(
     refresh = service.create_refresh_token(user)
     await _store_refresh_session(db, user, refresh)
     await db.commit()
-    _set_auth_cookies(response, access, refresh)
-    return {"access_token": access, "token_type": "bearer", "user": _user_response(user)}
+    redirect = RedirectResponse(
+        url=f"{settings.FRONTEND_URL.rstrip('/')}/login?entra=success",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+    _set_auth_cookies(redirect, access, refresh)
+    return redirect

@@ -34,6 +34,7 @@ logger = structlog.get_logger()
 class AskRequest(BaseModel):
     question: str = Field(min_length=2, max_length=4000)
     conversation_id: uuid.UUID | None = None
+    language: Literal["en", "vi"] = "en"
 
 
 class ConversationCreate(BaseModel):
@@ -346,7 +347,7 @@ async def ask_question(
 
     await repo.add_message(conversation.id, "user", req.question)
     data = await get_ai_service(db).ask(
-        current_user, req.question, conversation_id=conversation.id
+        current_user, req.question, conversation_id=conversation.id, language=req.language
     )
     await repo.add_message(
         conversation.id,
@@ -449,6 +450,7 @@ async def ask_question_stream(
                     stream_user,
                     req.question,
                     conversation_id=uuid.UUID(conversation_id),
+                    language=req.language,
                     on_token=on_token,
                     on_replace=on_replace,
                 )
