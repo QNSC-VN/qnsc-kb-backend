@@ -52,15 +52,15 @@ optional = true
 paddlepaddle = "^3.0.0"
 paddleocr = "^3.0.0"
 
-# Local embedding models. NOT installed by default: the API embeds the search query, so a
-# local model has to live in the API image too — that is what made it 3.5 GB compressed
-# and forced a 2 GB memory floor before serving a request. Deployed environments use a
-# hosted embedding API instead.
+# Local embedding models. Optional to poetry, but REQUIRED in practice: the default
+# EMBEDDING_MODEL (BAAI/bge-m3) is loaded in-process, by the worker to embed chunks and by
+# the API to embed the search query. Both the api and worker image targets install it, and
+# a local checkout needs it too:
 #
 #   poetry install --with ml
 #
-# Only needed to run a bge-*/minilm model locally, e.g. to compare retrieval quality
-# against the hosted one.
+# It stays a group rather than a main dependency so the migrator image — which touches
+# neither embeddings nor OCR — is not made to carry torch.
 [tool.poetry.group.ml]
 optional = true
 

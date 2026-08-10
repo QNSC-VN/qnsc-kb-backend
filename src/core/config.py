@@ -92,16 +92,22 @@ class Settings(BaseSettings):
     GEMINI_THINKING_LEVEL: str = "minimal"
     GEMINI_MAX_OUTPUT_TOKENS: int = 8192
     LLM_TIMEOUT_SECONDS: float = 90.0
-    # Hosted by default. A local model (bge-*, minilm) needs the optional `ml` dependency
-    # group and would have to be loaded by the API as well as the worker, because the API
-    # embeds the search query — which is what made the API image 3.5 GB.
+    # Local, in-process, and deliberately so: no embedding text leaves the deployment and
+    # no third-party key gates indexing or search.
+    #
+    # It is paid for in image size and memory. The API embeds the search QUERY on every
+    # search, so the weights and torch live in the api image as well as the worker's —
+    # the `ml` dependency group is installed in both, and neither is small. Choosing a
+    # hosted model instead (gemini-embedding-001, text-embedding-3-small) is a one-line
+    # change here plus the migration below, and src/lib/embeddings.py already carries
+    # that path.
     #
     # This value fixes EMBEDDING_DIMENSION, which fixes the pgvector column width and the
     # HNSW index AT MIGRATION TIME. Changing it later needs a migration and a full
     # re-embed: a query and a chunk embedded by different models are points in unrelated
     # spaces, and their distance is meaningless rather than merely wrong.
-    EMBEDDING_MODEL: str = "gemini-embedding-001"
-    EMBEDDING_VERSION: str = "gemini-embedding-001-768-v1"
+    EMBEDDING_MODEL: str = "BAAI/bge-m3"
+    EMBEDDING_VERSION: str = "bge-m3-v1"
     CHUNKING_VERSION: str = "v2-structure-aware"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"
