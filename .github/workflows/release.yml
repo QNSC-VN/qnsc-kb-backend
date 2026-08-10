@@ -1,0 +1,26 @@
+# =============================================================================
+# Release Please — opens a "chore(release): vX.Y.Z" PR on every push to main, then
+# tags when that PR is merged. The tag is what triggers the production deploy.
+#
+# Delegates to the shared reusable in qnsc-ci so release logic stays identical across
+# products. RELEASE_BOT_APP_ID (org variable) is read by the reusable;
+# RELEASE_BOT_PRIVATE_KEY is passed explicitly.
+#
+# The App token is not a convenience: a tag pushed with the default GITHUB_TOKEN does
+# NOT trigger other workflows, so the release would tag and then silently never deploy.
+# =============================================================================
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release:
+    uses: QNSC-VN/qnsc-ci/.github/workflows/release-please.yml@v1.7.1
+    secrets:
+      RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}

@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 import re
 
 
@@ -50,6 +50,30 @@ class Settings(BaseSettings):
     APP_DATABASE_ROLE: str | None = None
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # ── Connection PARTS — an alternative to the two URLs above ────────────────
+    # A managed database hands out its credentials as a rotatable secret, and a
+    # container platform injects a secret as its own environment variable. There is
+    # no supported way to interpolate one into the middle of a URL string at task
+    # start, so a deployment that only accepts DATABASE_URL forces the whole URL —
+    # password included — to be a hand-maintained secret. That copy then silently
+    # goes stale on the next endpoint change or credential rotation, and the failure
+    # appears as an authentication error somewhere else entirely.
+    #
+    # When DATABASE_HOST is set, the URL is composed from these parts instead (see
+    # model_post_init). An explicitly supplied DATABASE_URL always wins, so local
+    # development, tests and Compose are untouched.
+    DATABASE_HOST: str | None = None
+    DATABASE_PORT: int = 5432
+    DATABASE_NAME: str = "qnsc_kb"
+    DATABASE_USER: str | None = None
+    DATABASE_PASSWORD: str | None = None
+    # The master credential, used ONLY by the migrator task: migrations create
+    # extensions (vector, pgcrypto) and grant privileges, neither of which the
+    # least-privilege application role may do. Host, port and name are shared with
+    # the application parts above.
+    MIGRATION_DATABASE_USER: str | None = None
+    MIGRATION_DATABASE_PASSWORD: str | None = None
+
     OPENAI_API_KEY: str | None = None
     GROQ_API_KEY: str | None = None
     GLM_API_KEY: str | None = None
@@ -59,13 +83,25 @@ class Settings(BaseSettings):
     # host. Keep that capability opt-in, even for global administrators.
     LLM_ALLOW_CUSTOM_BASE_URL: bool = False
     GEMINI_API_KEY: str | None = None
-    GEMINI_MODEL: str = "gemma-4-26b-a4b-it"
+    # A floating `-latest` alias, not a pinned version. Google retires pinned models for
+    # new API keys — the deployed default was gemini-2.5-flash-lite, and every call
+    # returned 404 "no longer available to new users". Nothing validates a model name at
+    # startup, so it surfaced as broken AI answers, not as a failed deploy.
+    GEMINI_MODEL: str = "gemini-flash-lite-latest"
     GEMINI_API_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta"
     GEMINI_THINKING_LEVEL: str = "minimal"
     GEMINI_MAX_OUTPUT_TOKENS: int = 8192
     LLM_TIMEOUT_SECONDS: float = 90.0
-    EMBEDDING_MODEL: str = "BAAI/bge-m3"
-    EMBEDDING_VERSION: str = "bge-m3-v1"
+    # Hosted by default. A local model (bge-*, minilm) needs the optional `ml` dependency
+    # group and would have to be loaded by the API as well as the worker, because the API
+    # embeds the search query — which is what made the API image 3.5 GB.
+    #
+    # This value fixes EMBEDDING_DIMENSION, which fixes the pgvector column width and the
+    # HNSW index AT MIGRATION TIME. Changing it later needs a migration and a full
+    # re-embed: a query and a chunk embedded by different models are points in unrelated
+    # spaces, and their distance is meaningless rather than merely wrong.
+    EMBEDDING_MODEL: str = "gemini-embedding-001"
+    EMBEDDING_VERSION: str = "gemini-embedding-001-768-v1"
     CHUNKING_VERSION: str = "v2-structure-aware"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"
@@ -144,7 +180,32 @@ class Settings(BaseSettings):
     MALWARE_SCANNER_PORT: int = 3310
     OTEL_EXPORTER_OTLP_ENDPOINT: str | None = None
 
+    def _compose_dsn(self, user: str, password: str) -> str:
+        """Build a SQLAlchemy asyncpg URL from the connection parts.
+
+        The password is percent-encoded: a generated credential routinely contains
+        ``@``, ``/`` or ``:``, each of which terminates a different component of a URL,
+        so pasting one in raw yields a URL that parses cleanly into the wrong host,
+        port or database.
+        """
+        return (
+            f"postgresql+asyncpg://{quote(user, safe='')}:{quote(password, safe='')}"
+            f"@{self.DATABASE_HOST}:{self.DATABASE_PORT}/{self.DATABASE_NAME}"
+        )
+
     def model_post_init(self, __context: Any) -> None:
+        # Compose the database URLs from parts when a host is supplied and no explicit
+        # URL was given. `model_fields_set` is what makes "explicit" mean explicit:
+        # DATABASE_URL has a non-empty default, so testing its truthiness would treat
+        # the localhost default as a deliberate choice and ignore the injected parts.
+        if self.DATABASE_HOST:
+            if "DATABASE_URL" not in self.model_fields_set and self.DATABASE_USER and self.DATABASE_PASSWORD:
+                self.DATABASE_URL = self._compose_dsn(self.DATABASE_USER, self.DATABASE_PASSWORD)
+            if not self.MIGRATION_DATABASE_URL and self.MIGRATION_DATABASE_USER and self.MIGRATION_DATABASE_PASSWORD:
+                self.MIGRATION_DATABASE_URL = self._compose_dsn(
+                    self.MIGRATION_DATABASE_USER, self.MIGRATION_DATABASE_PASSWORD
+                )
+
         if self.EMBEDDING_DIMENSION is None:
             model = self.EMBEDDING_MODEL.lower()
             if "bge-m3" in model:
@@ -153,6 +214,11 @@ class Settings(BaseSettings):
                 self.EMBEDDING_DIMENSION = 384
             elif "text-embedding-3-small" in model or "ada-002" in model:
                 self.EMBEDDING_DIMENSION = 1536
+            elif "gemini-embedding" in model or "text-embedding-004" in model:
+                # 768, NOT the provider's 3072 default: pgvector's HNSW index refuses to
+                # build above 2000 dimensions, and the adapter asks for this width
+                # explicitly via outputDimensionality.
+                self.EMBEDDING_DIMENSION = 768
             else:
                 self.EMBEDDING_DIMENSION = 1024
 

@@ -18,7 +18,7 @@ router = APIRouter()
 
 class LLMConfigUpdate(BaseModel):
     enabled: bool = True
-    provider: Literal["openai", "glm", "groq"]
+    provider: Literal["openai", "glm", "groq", "gemini"]
     model: str = Field(min_length=1, max_length=150)
     base_url: str | None = Field(default=None, max_length=500)
     api_key: str | None = Field(default=None, max_length=1000)

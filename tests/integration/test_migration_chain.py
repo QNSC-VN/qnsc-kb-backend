@@ -8,7 +8,7 @@ def test_migrations_have_one_current_head():
     root = Path(__file__).resolve().parents[2]
     config = Config(str(root / "migrations" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260810_50"]
+    assert script.get_heads() == ["20260810_36"]
 
 
 def test_production_compose_is_explicitly_hardened():
@@ -32,6 +32,10 @@ def test_production_compose_is_explicitly_hardened():
     assert compose.count("MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:?set MICROSOFT_CLIENT_ID}") == 2
     assert compose.count("MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:?set MICROSOFT_CLIENT_SECRET}") == 2
     assert compose.count("MICROSOFT_TENANT_ID: ${MICROSOFT_TENANT_ID:?set MICROSOFT_TENANT_ID}") == 2
+    # Migrations are not run from any service's entrypoint any more — the `migrator`
+    # image target owns them, behind a compose profile, so a scale-out cannot fire N
+    # concurrent migrations. Locally that means `alembic upgrade head` by hand.
+    assert "target: migrator" in compose
     dev_compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
-    assert 'entrypoint: ["/app/docker/entrypoint.sh"]' in dev_compose
+    assert "entrypoint:" not in dev_compose
     assert "AUTO_CREATE_SCHEMA=false" in dev_compose

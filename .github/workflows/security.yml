@@ -1,0 +1,43 @@
+# =============================================================================
+# Security · Scan — thin caller of the shared reusable (qnsc-ci).
+#
+# Trivy (filesystem + built image), Semgrep, gitleaks, and OSV over the dependency
+# lockfile. Language-agnostic: OSV reads poetry.lock directly.
+#
+# Runs weekly as well as on push, because a CVE published after a merge is invisible
+# to a push-triggered scan — the code did not change, the world did.
+# =============================================================================
+name: Security · Scan
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 4 * * 1" # Monday 04:00 UTC
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write # SARIF upload
+  # A CEILING, not a grant this workflow uses: the reusable's Trivy job declares
+  # `packages: read`, and a called workflow can only REDUCE the caller's permissions,
+  # never elevate them. Without it here GitHub rejects the whole workflow before any job
+  # runs — a `startup_failure` with no log to read, which looks like the reusable is
+  # missing rather than like a permission ceiling.
+  packages: read
+
+jobs:
+  security:
+    uses: QNSC-VN/qnsc-ci/.github/workflows/security.yml@v1.7.1
+    with:
+      product: qnsc-kb
+      image_target: api
+      # OSV findings block. The dependency surface here is unusually wide — torch,
+      # paddlepaddle, paddleocr, pymupdf and their transitive graph — which is an
+      # argument for the gate rather than against it.
+      osv_blocking: true

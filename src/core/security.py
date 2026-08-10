@@ -4,6 +4,7 @@ if not hasattr(bcrypt, "__about__"):
         __version__ = bcrypt.__version__
     bcrypt.__about__ = About()
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from jose import jwt
@@ -34,4 +35,17 @@ def create_access_token(subject: str | Any, expires_delta: timedelta | None = No
 
 def create_refresh_token(subject: str | Any, auth_version: int = 0) -> str:
     expire = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
-    return jwt.encode({"exp": expire, "sub": str(subject), "type": "refresh", "av": auth_version}, settings.SECRET_KEY, algorithm="HS256")
+    # `jti` makes every refresh token unique. Without it the claims are {exp, sub, type,
+    # av} and `exp` has one-second resolution, so two tokens minted for the same user in
+    # the same second are BYTE-IDENTICAL — and refresh_sessions.token_hash is UNIQUE, so
+    # storing the replacement raised UniqueViolationError and the refresh returned 500.
+    #
+    # That is not a rare race. Rotation revokes the old row and inserts a new one in the
+    # same request, so any refresh landing in the same second as the mint it replaces
+    # fails — signing in and refreshing immediately, or two tabs refreshing at once.
+    # Revoked rows keep their hash, so the collision outlives the session it replaced.
+    return jwt.encode(
+        {"exp": expire, "sub": str(subject), "type": "refresh", "av": auth_version, "jti": uuid.uuid4().hex},
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )

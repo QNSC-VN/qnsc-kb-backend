@@ -1,0 +1,357 @@
+# =============================================================================
+# CI — quality gates on every PR and push to main.
+# Gate: format/lint/typecheck → tests → migration upgrade path → docker build →
+#       OpenAPI contract diff.
+#
+# Security scans live in security.yml, which is independently runnable and also
+# runs weekly to catch CVEs published between pushes.
+#
+# The name of this workflow file matters beyond this repo: the deploy pipeline's
+# `wait-for-ci` gate looks up a run of `backend-ci.yml` for the exact commit sha and
+# FAILS CLOSED when it finds none. Renaming this file without updating
+# backend-deploy.yml blocks every deploy.
+# =============================================================================
+name: Backend · CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    # Deliberately NOT `edited`. That action exists for the PR-title check, which lives
+    # in pr-title.yml. Listening for it here, combined with cancel-in-progress below,
+    # means editing a PR title cancels the in-flight real run and replaces it with one
+    # that has nothing to do.
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ci-backend-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: '3.11' # matches the Dockerfile's python:3.11-slim base
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────
+  # 1. Format, lint, typecheck — fast gate, no services needed.
+  # ─────────────────────────────────────────────────────────────────────────
+  quality:
+    name: Format & typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      # black and mypy have been dev dependencies since the project began and nothing ever
+      # ran either, so both start ADVISORY. This codebase has never been formatted, and a
+      # blocking gate would fail every PR on a whole-repo backlog that has nothing to do
+      # with the change under review.
+      #
+      # Promote to blocking after one dedicated `style: format with black` commit. Doing
+      # that reformat inside a feature branch would bury the actual change under every
+      # file in the repository, which is why it is not done here.
+      #
+      # An advisory check nobody ever promotes is decoration — this one has a specific
+      # next step, and it should be taken.
+      - name: Format check (black, advisory)
+        continue-on-error: true
+        run: poetry run black --check src migrations scripts
+
+      # Advisory to begin with: this codebase has never been type-checked, so a blocking
+      # gate would fail on a large backlog that has nothing to do with the PR in front of
+      # it. Make it blocking once the existing errors are cleared — an advisory check
+      # nobody ever promotes is decoration.
+      - name: Typecheck (mypy, advisory)
+        continue-on-error: true
+        run: poetry run mypy src
+
+      # Cheap catch-all that needs no configuration: every module must at least parse.
+      - name: Compile all sources
+        run: poetry run python -m compileall -q src migrations scripts
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 2. Tests + the RAG regression gate.
+  #
+  # Postgres carries pgvector because the models declare a Vector column; the stock
+  # postgres image cannot create the extension the migrations require.
+  # ─────────────────────────────────────────────────────────────────────────
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: qnsc_kb_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    env:
+      PYTHONPATH: .
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/qnsc_kb_test
+      REDIS_URL: redis://localhost:6379/0
+      # DO NOT set EMBEDDING_MODEL=mock here, however tempting it looks as a way to avoid
+      # downloading model weights. `get_bge_embedding` short-circuits to a zero vector on
+      # that value, which silently disables
+      # tests/unit/test_security_hardening.py::test_embedding_failure_is_not_converted_to_zero_vector
+      # — a test whose entire point is that an embedding failure must RAISE rather than
+      # return zeros, because a zero vector makes an indexing outage look healthy and
+      # contaminates retrieval with meaningless candidates.
+      #
+      # It is not needed: the tests that touch embeddings monkeypatch the model singleton,
+      # so nothing loads real weights.
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Unit tests
+        run: poetry run pytest -q
+
+      - name: RAG regression gate
+        run: poetry run python scripts/run_eval.py --input evaluation/golden.json
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 3. Migration upgrade path.
+  #
+  # A fresh database proves a migration is self-consistent; it does NOT prove the
+  # migration applies to the schema that is already deployed. This job applies main's
+  # migrations first, then the PR's on top — the same order production sees. In
+  # production these run unattended in a one-shot task, so a migration that only works
+  # against an empty database fails where nobody is watching.
+  # ─────────────────────────────────────────────────────────────────────────
+  migrations:
+    name: Migration upgrade path
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: qnsc_kb_upgrade
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PYTHONPATH: .
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/qnsc_kb_upgrade
+      # Exercises the branch that production runs: the RLS policies and the GRANTs to
+      # the application role are skipped entirely when this is false, so a CI run
+      # without it never executes the half of each migration that matters most.
+      ENABLE_RLS: 'true'
+      APP_DATABASE_ROLE: qnsc_app
+      APP_DATABASE_PASSWORD: ci-not-a-real-password
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # need origin/main to build the baseline schema
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      # Advisory, not blocking. Expand/contract is a judgement call — a destructive
+      # migration is fine when the code that stopped using the column already shipped —
+      # so this surfaces the DDL for a reviewer rather than guessing at intent.
+      - name: Expand-contract advisory
+        if: github.event_name == 'pull_request'
+        run: |
+          added=$(git diff origin/main...HEAD -- 'migrations/versions/*.py' \
+            | grep -E '^\+' | grep -vE '^\+\+\+' || true)
+          if [ -z "$added" ]; then echo "No new migration lines."; exit 0; fi
+          pattern='drop_column|drop_table|drop_constraint|alter_column.*nullable=False|RENAME'
+          hits=$(echo "$added" | grep -iE "$pattern" | grep -iv 'expand-contract-ok' || true)
+          if [ -n "$hits" ]; then
+            echo "$hits" | while IFS= read -r line; do
+              echo "::warning title=Expand-contract::Backward-incompatible DDL — verify migrate-before-flip safe: ${line#+}"
+            done
+          else
+            echo "No backward-incompatible DDL detected."
+          fi
+
+      # Creates the qnsc_app role the RLS migration GRANTs to. Same script the migrator
+      # image runs from its entrypoint, so CI exercises that path too rather than
+      # assuming it works.
+      - name: Bootstrap application role
+        run: poetry run python scripts/bootstrap_db_role.py
+
+      - name: Apply baseline (main) migrations
+        run: |
+          git checkout origin/main -- migrations
+          poetry run alembic -c migrations/alembic.ini upgrade head
+          git checkout HEAD -- migrations
+
+      - name: Apply new migrations on top of baseline
+        run: poetry run alembic -c migrations/alembic.ini upgrade head
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 4. Docker build — all three targets the deploy pipeline ships.
+  # ─────────────────────────────────────────────────────────────────────────
+  build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      # No build args: no image bakes model weights any more. Embeddings come from a
+      # hosted API, so the only large dependency left is paddle, and it is installed in
+      # the worker target alone.
+      - name: Build api image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: api
+          push: false
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build worker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: worker
+          push: false
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=max,scope=worker
+
+      - name: Build migrator image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: migrator
+          push: false
+          cache-from: type=gha,scope=migrator
+          cache-to: type=gha,mode=max,scope=migrator
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 5. OpenAPI contract.
+  #
+  # The SPA lives in a SEPARATE repo (qnsc-kb-frontend) with a hand-written client, so
+  # nothing else in this repository can notice that a rename or a removed endpoint just
+  # broke it. oasdiff compares the spec on this branch against main's and fails on a
+  # backwards-incompatible change.
+  #
+  # No database or cache needed: importing the app builds the route table, and
+  # validate_production/init_db run on STARTUP, which never happens here.
+  # ─────────────────────────────────────────────────────────────────────────
+  openapi:
+    name: OpenAPI contract
+    runs-on: ubuntu-latest
+    needs: [quality]
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: .
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Install dependencies
+        run: poetry install --no-interaction --no-root
+
+      - name: Generate OpenAPI spec (this branch)
+        run: |
+          poetry run python -c "
+          import json
+          from src.api.main import app
+          json.dump(app.openapi(), open('openapi.json', 'w'), indent=2)
+          "
+
+      # Two traps here, both of which silently produce a spec for the WRONG commit and
+      # so a diff that always reports "no breaking changes":
+      #
+      #   1. `poetry run` inside the worktree resolves a DIFFERENT virtualenv — the
+      #      worktree has its own pyproject.toml and nothing installed against it. Take
+      #      the interpreter from the environment already installed at the repo root.
+      #   2. For `python -c`, sys.path[0] is the CWD, which shadows PYTHONPATH. So the
+      #      run has to happen from inside the worktree, not from the repo root with
+      #      PYTHONPATH pointed at it.
+      - name: Generate OpenAPI spec (main)
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          PY=$(poetry env info --executable)
+          git worktree add /tmp/base origin/main
+          cd /tmp/base
+          "$PY" -c "
+          import json
+          from src.api.main import app
+          json.dump(app.openapi(), open('/tmp/openapi-base.json', 'w'), indent=2)
+          "
+
+      - name: Detect breaking API changes
+        if: github.event_name == 'pull_request'
+        uses: QNSC-VN/qnsc-ci/actions/validate-openapi-contract@v1
+        with:
+          current-spec-path: openapi.json
+          base-spec-path: /tmp/openapi-base.json
+
+      # Uploaded on every run so the frontend repo has a spec to check its client
+      # against, and so a reviewer can read what the API surface became.
+      - name: Publish OpenAPI spec
+        uses: QNSC-VN/qnsc-ci/actions/publish-openapi-spec@v1
+        with:
+          spec-path: openapi.json

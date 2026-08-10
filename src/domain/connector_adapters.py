@@ -169,6 +169,15 @@ class ConnectorAdapter:
     async def create_webhook(self, scope: dict[str, Any], callback_url: str) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def renew_webhook(self, provider_subscription_id: str) -> datetime | None:
+        """Push the subscription's expiry out and return the new one.
+
+        Returning None means this provider cannot extend a subscription in place and the
+        caller should treat the subscription as expired. Raising is reserved for a
+        provider that CAN renew and failed to.
+        """
+        return None
+
 
 class SharePointAdapter(ConnectorAdapter):
     provider = "sharepoint"
@@ -303,6 +312,18 @@ class SharePointAdapter(ConnectorAdapter):
             "clientState": client_state,
         })
         return {"subscription_id": result["id"], "client_state": client_state, "expires_at": expires_at}  # type: ignore[index]
+
+    async def renew_webhook(self, provider_subscription_id: str) -> datetime | None:
+        # Graph caps a drive subscription at roughly 30 days but rejects anything beyond
+        # its own maximum, so this asks for the same hour create_webhook does and leans on
+        # the renewal task running far more often than that.
+        expires_at = datetime.utcnow() + timedelta(hours=1)
+        await self._request(
+            "PATCH",
+            f"{self.graph}/subscriptions/{provider_subscription_id}",
+            json={"expirationDateTime": expires_at.isoformat(timespec="seconds") + "Z"},
+        )
+        return expires_at
 
     async def incremental_changes(self, scope: dict[str, Any], cursor: str | None) -> tuple[list[NormalizedChange], str | None]:
         drive_id = scope["config"].get("drive_id", scope["external_scope_id"])

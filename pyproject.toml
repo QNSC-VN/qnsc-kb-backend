@@ -27,12 +27,8 @@ structlog = "^24.2.0"
 opentelemetry-api = "^1.27.0"
 opentelemetry-sdk = "^1.27.0"
 opentelemetry-exporter-otlp-proto-http = "^1.27.0"
-sentence-transformers = "^3.0.1"
 bcrypt = "3.2.2"
-torch = { version = "2.6.0", source = "pytorch-cpu" }
 numpy = "<2.0.0"
-paddlepaddle = "^3.0.0"
-paddleocr = "^3.0.0"
 pypdf = "^5.4.0"
 python-docx = "^1.1.2"
 openpyxl = "^3.1.5"
@@ -42,6 +38,35 @@ pymupdf = "^1.25.3"
 # 0.0.2 is the last MarkItDown release compatible with this project's
 # NumPy 1.x constraint (required by the local Paddle/Torch OCR stack).
 markitdown = "0.0.2"
+
+# Scanned-document OCR. NOT installed by default: only the WORKER extracts text from
+# scanned files, and paddle is ~1 GB. src/domain/source_extraction.py imports it lazily,
+# inside the functions that use it, so an image without it serves every other code path
+# normally and fails loudly only if asked to OCR — which the API never is.
+#
+#   poetry install --with ocr
+[tool.poetry.group.ocr]
+optional = true
+
+[tool.poetry.group.ocr.dependencies]
+paddlepaddle = "^3.0.0"
+paddleocr = "^3.0.0"
+
+# Local embedding models. NOT installed by default: the API embeds the search query, so a
+# local model has to live in the API image too — that is what made it 3.5 GB compressed
+# and forced a 2 GB memory floor before serving a request. Deployed environments use a
+# hosted embedding API instead.
+#
+#   poetry install --with ml
+#
+# Only needed to run a bge-*/minilm model locally, e.g. to compare retrieval quality
+# against the hosted one.
+[tool.poetry.group.ml]
+optional = true
+
+[tool.poetry.group.ml.dependencies]
+sentence-transformers = "^3.0.1"
+torch = { version = "2.6.0", source = "pytorch-cpu" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"

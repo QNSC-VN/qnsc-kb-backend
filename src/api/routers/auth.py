@@ -601,7 +601,12 @@ async def create_managed_user(
     if user_in.owned_department_ids is not None:
         _apply_department_ownership(user, owned_departments)
     await db.commit()
-    await db.refresh(user)
+    # Re-FETCH rather than refresh(). db.refresh() expires the instance and reloads only
+    # its column attributes, discarding the eager loads this function set up above — and
+    # _user_response walks user.roles -> role.permissions, which then lazy-loads inside an
+    # async request and raises MissingGreenlet. The 500 is reported after the user has
+    # already been committed, so it reads as "creation failed" when the row exists.
+    user = await UserRepository(db).get_by_id(user.id)
     await AuditRepository(db).record(current_user.id, "user_create", "user", str(user.id))
     return _user_response(user)
 
@@ -946,7 +951,10 @@ async def replace_user_roles(user_id: uuid.UUID, role_ids: list[uuid.UUID], curr
     user.roles = list(roles)
     user.role = next((role.name for role in roles if role.name in MANAGED_PRIMARY_ROLES), roles[0].name)
     await db.commit()
-    await db.refresh(user)
+    # Re-FETCH, not refresh() — same reason as create_managed_user above: refresh discards
+    # the eager loads, and _user_response then lazy-loads user.roles inside an async
+    # request and raises MissingGreenlet.
+    user = await UserRepository(db).get_by_id(user.id)
     await AuditRepository(db).record(current_user.id, "user_roles_update", "user", str(user.id))
     return _user_response(user)
 
