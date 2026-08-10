@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 import httpx
 
@@ -130,7 +130,16 @@ class ConnectorAdapter:
                 if status_code in {401, 403}:
                     raise ConnectorProviderError(f"Provider authorization failed ({status_code})", retryable=False, code=str(status_code))
                 if status_code >= 400:
-                    raise ConnectorProviderError(f"Provider request failed ({status_code})", code=str(status_code))
+                    detail = ""
+                    if "application/json" in response_headers.get("content-type", "").lower():
+                        try:
+                            payload = json.loads(body)
+                            error_payload = payload.get("error") if isinstance(payload, dict) else None
+                            detail = str((error_payload or {}).get("message") or (error_payload or {}).get("code") or "")[:240]
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            detail = ""
+                    suffix = f": {detail}" if detail else ""
+                    raise ConnectorProviderError(f"Provider request failed ({status_code}){suffix}", code=str(status_code))
                 if "application/json" in response_headers.get("content-type", "").lower():
                     try:
                         return json.loads(body)
@@ -217,15 +226,79 @@ class SharePointAdapter(ConnectorAdapter):
             return response.json()
 
     async def discover_scopes(self) -> list[dict[str, Any]]:
+        # ``/drives`` often returns only a generic library such as
+        # "Documents". Resolve SharePoint sites first so reviewers can see the
+        # real site/library/folder location instead of guessing where it lives.
+        sites_data = await self._request("GET", f"{self.graph}/sites?search=*&$top=50&$select=id,name,displayName,webUrl")
+        sites = sites_data.get("value", []) if isinstance(sites_data, dict) else []
+        result: list[dict[str, Any]] = []
+
+        for site in sites:
+            site_id = str(site.get("id") or "")
+            if not site_id:
+                continue
+            site_name = str(site.get("displayName") or site.get("name") or site_id)
+            site_url = site.get("webUrl")
+            drives_data = await self._request(
+                "GET",
+                f"{self.graph}/sites/{quote(site_id, safe='')}/drives?$select=id,name,driveType,webUrl",
+            )
+            for drive in drives_data.get("value", []):  # type: ignore[union-attr]
+                drive_id = str(drive.get("id") or "")
+                if not drive_id:
+                    continue
+                drive_name = str(drive.get("name") or drive_id)
+                location = f"{site_name} / {drive_name}"
+                drive_config = {
+                    "site_id": site_id,
+                    "site_name": site_name,
+                    "site_url": site_url,
+                    "drive_id": drive_id,
+                    "drive_name": drive_name,
+                    "web_url": drive.get("webUrl") or site_url,
+                    "location_label": location,
+                }
+                result.append({
+                    "external_scope_id": drive_id,
+                    "scope_type": "sharepoint_library",
+                    "display_name": location,
+                    "config": drive_config,
+                })
+                folders = await self._request(
+                    "GET",
+                    f"{self.graph}/drives/{quote(drive_id, safe='')}/root/children?$select=id,name,folder,webUrl",
+                )
+                for folder in folders.get("value", []):  # type: ignore[union-attr]
+                    if folder.get("folder"):
+                        folder_name = str(folder.get("name") or folder.get("id"))
+                        result.append({
+                            "external_scope_id": f"{drive_id}:{folder['id']}",
+                            "scope_type": "sharepoint_folder",
+                            "display_name": f"{location} / {folder_name}",
+                            "config": {
+                                **drive_config,
+                                "folder_id": folder["id"],
+                                "web_url": folder.get("webUrl") or drive.get("webUrl") or site_url,
+                                "location_label": f"{location} / {folder_name}",
+                            },
+                        })
+
+        if result:
+            return result
+
+        # Keep a fallback for tenants where site search is disabled but the
+        # delegated token can still enumerate drives.
         data = await self._request("GET", f"{self.graph}/drives?$select=id,name,driveType,webUrl")
-        result = []
         for item in data.get("value", []):  # type: ignore[union-attr]
-            drive_id = item["id"]
-            result.append({"external_scope_id": drive_id, "scope_type": "drive", "display_name": item.get("name", drive_id), "config": {"drive_id": drive_id, "web_url": item.get("webUrl")}})
-            folders = await self._request("GET", f"{self.graph}/drives/{drive_id}/root/children?$select=id,name,folder,webUrl")
+            drive_id = str(item.get("id") or "")
+            drive_name = str(item.get("name") or drive_id)
+            location = f"Available SharePoint library / {drive_name}"
+            result.append({"external_scope_id": drive_id, "scope_type": "sharepoint_library", "display_name": location, "config": {"drive_id": drive_id, "drive_name": drive_name, "web_url": item.get("webUrl"), "location_label": location}})
+            folders = await self._request("GET", f"{self.graph}/drives/{quote(drive_id, safe='')}/root/children?$select=id,name,folder,webUrl")
             for folder in folders.get("value", []):  # type: ignore[union-attr]
                 if folder.get("folder"):
-                    result.append({"external_scope_id": f"{drive_id}:{folder['id']}", "scope_type": "folder", "display_name": f"{item.get('name', drive_id)} / {folder.get('name', folder['id'])}", "config": {"drive_id": drive_id, "folder_id": folder["id"], "web_url": folder.get("webUrl")}})
+                    folder_name = str(folder.get("name") or folder.get("id"))
+                    result.append({"external_scope_id": f"{drive_id}:{folder['id']}", "scope_type": "sharepoint_folder", "display_name": f"{location} / {folder_name}", "config": {"drive_id": drive_id, "folder_id": folder["id"], "web_url": folder.get("webUrl") or item.get("webUrl"), "location_label": f"{location} / {folder_name}"}})
         return result
 
     async def create_webhook(self, scope: dict[str, Any], callback_url: str) -> dict[str, Any]:
@@ -285,6 +358,12 @@ class SharePointAdapter(ConnectorAdapter):
             principal = identities.get("user") or identities.get("group") or identities.get("siteUser") or identities.get("siteGroup")
             if principal and principal.get("id"):
                 result.append({"principal_type": "group" if "group" in identities or "siteGroup" in identities else "user", "principal_id": str(principal["id"]), "role": ",".join(item.get("roles") or [])})
+            elif item.get("id"):
+                # Preserve link/domain/other permission entries as explicit
+                # unresolved principals. Dropping them would make a provider
+                # ACL look narrower than it is and could allow an unsafe
+                # approval or mapping decision.
+                result.append({"principal_type": "unknown", "principal_id": str(item["id"]), "role": ",".join(item.get("roles") or [])})
         return result
 
     async def download(self, change: NormalizedChange) -> bytes:

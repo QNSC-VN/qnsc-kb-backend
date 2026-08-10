@@ -1,7 +1,9 @@
+import asyncio
 import uuid
 import structlog
 from datetime import datetime
 from datetime import timedelta
+from datetime import timezone
 from sqlalchemy import select, update
 from celery.signals import worker_ready, worker_process_init, task_prerun, task_failure
 from src.workers.celery_app import celery_app
@@ -11,7 +13,7 @@ from src.repositories.chunk import ChunkRepository
 from src.domain.permissions import PermissionService
 from src.core.config import settings
 from src.models.chunk import ParentChunk, ArticleChunk
-from src.models.ops import ApiRequestMetric, OutboxEvent
+from src.models.ops import ApiRequestMetric, OutboxEvent, IndexReprocessJob
 from src.models.ai import AiCache
 from src.workers.loop import reset_worker_loop, sync_run
 
@@ -112,6 +114,140 @@ def prune_operational_metrics() -> None:
             await db.commit()
     sync_run(prune())
 
+
+async def _run_orphan_source_cleanup() -> int:
+    """Delete old private R2 objects that have no database reference."""
+    from src.domain.source_storage import delete_source, list_source_objects
+    from src.models.article import DocumentSource
+    from src.models.connectors import DocumentVersion
+    from src.models.governance import PendingDraft
+
+    if not settings.SOURCE_STORAGE_BUCKET:
+        logger.warning("Skipping R2 orphan sweep because no bucket is configured")
+        return 0
+
+    objects = await asyncio.to_thread(list_source_objects)
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        hours=max(1, settings.SOURCE_ORPHAN_GRACE_HOURS)
+    )
+    async with SessionLocal() as db:
+        await set_database_context(db, None, True)
+        referenced_keys: set[str] = set()
+        for model in (PendingDraft, DocumentSource, DocumentVersion):
+            result = await db.execute(
+                select(model.storage_key).where(model.storage_key.is_not(None))
+            )
+            referenced_keys.update(
+                str(storage_key)
+                for storage_key in result.scalars().all()
+                if storage_key
+            )
+
+    deleted_count = 0
+    for item in objects:
+        storage_key = item.get("storage_key")
+        last_modified = item.get("last_modified")
+        if not storage_key or not isinstance(last_modified, datetime):
+            continue
+        if last_modified.tzinfo is None:
+            last_modified = last_modified.replace(tzinfo=timezone.utc)
+        if last_modified >= cutoff or storage_key in referenced_keys:
+            continue
+        try:
+            await asyncio.to_thread(delete_source, storage_key)
+            deleted_count += 1
+        except Exception:
+            logger.exception(
+                "R2 orphan source deletion failed", storage_key=storage_key
+            )
+    logger.info(
+        "R2 orphan source sweep completed",
+        scanned=len(objects),
+        deleted=deleted_count,
+        referenced=len(referenced_keys),
+    )
+    return deleted_count
+
+
+@celery_app.task(
+    name="cleanup_orphaned_source_objects",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3},
+)
+def cleanup_orphaned_source_objects() -> int:
+    """Periodic safety net for objects left by failed ingestion transactions."""
+    return sync_run(_run_orphan_source_cleanup())
+
+
+@celery_app.task(
+    name="restructure_pending_draft_task",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+)
+def restructure_pending_draft_task(draft_id_str: str, company_domain: str, user_id_str: str):
+    """Format a stored upload after the upload request has completed."""
+    async def process():
+        from src.domain.content_restructure import restructure_document
+        from src.models import User
+        from src.models.governance import AuditLog, PendingDraft
+        from src.domain.llm_config import load_runtime_config
+        from src.repositories.feature_flags import FeatureFlagRepository
+
+        async with SessionLocal() as db:
+            # This is an internal task for a draft that was already authorized
+            # and persisted by the request. Keep the tenant context explicit.
+            await set_database_context(db, company_domain, True, user_id=user_id_str, global_governance_access=True)
+            # Celery has its own Python process and does not run API startup;
+            # load the administrator's saved provider before calling the LLM.
+            await load_runtime_config(db)
+            draft = await db.get(PendingDraft, uuid.UUID(draft_id_str))
+            if not draft or draft.status != "pending":
+                return
+            user = await db.get(User, uuid.UUID(user_id_str))
+            enabled = bool(settings.RESTRUCTURE_ENABLED and user and await FeatureFlagRepository(db).is_enabled("ai.document_restructure", user))
+            source_text = draft.summary or "\n\n".join(
+                str(page.get("text", "")) for page in (draft.page_texts or []) if page.get("text")
+            )
+            draft.restructure_status = "processing"
+            draft.restructure_error = None
+            draft.restructure_candidate_md = None
+            draft.restructure_decision = "not_reviewed"
+            await db.commit()
+            try:
+                result = await restructure_document(draft.title, source_text, enabled=enabled)
+                draft.restructured_body_md = result.body_md
+                draft.restructure_candidate_md = result.candidate_body_md
+                draft.restructure_decision = "pending_review" if result.candidate_body_md else ("ai_ready" if result.status == "llm" else "lossless_ready")
+                draft.restructure_status = result.status
+                draft.restructure_model = result.model
+                draft.restructure_error = result.error
+                db.add(AuditLog(
+                    user_id=user.id if user else None,
+                    action="restructure",
+                    target_type="draft",
+                    target_id=str(draft.id),
+                ))
+                await db.commit()
+                logger.info(
+                    "Pending draft AI formatting completed",
+                    draft_id=str(draft.id),
+                    restructure_status=result.status,
+                    restructure_model=result.model,
+                )
+            except Exception as exc:
+                draft.restructured_body_md = source_text
+                draft.restructure_candidate_md = None
+                draft.restructure_decision = "lossless_ready"
+                draft.restructure_status = "fallback_formatting"
+                draft.restructure_model = "lossless-markdown"
+                draft.restructure_error = f"AI formatting failed ({str(exc) or 'unknown error'}); retry from Pending Drafts."
+                await db.commit()
+                logger.exception("Pending draft AI formatting failed", draft_id=str(draft.id))
+
+    return sync_run(process())
+
 @celery_app.task(name="generate_embeddings_task")
 def generate_embeddings_task(article_id_str: str):
     article_id = uuid.UUID(article_id_str)
@@ -126,6 +262,60 @@ def generate_embeddings_task(article_id_str: str):
     except Exception:
         logger.exception("Embedding generation task failed", article_id=article_id)
         raise
+
+
+async def run_reprocess_index_job(job_id_str: str) -> None:
+    """Re-index a durable article set on the caller's async event loop."""
+    from src.models.article import Article
+    from src.domain.indexing import index_article
+
+    async with SessionLocal() as db:
+        await set_database_context(db, None, True)
+        job = await db.get(IndexReprocessJob, uuid.UUID(job_id_str))
+        if not job:
+            return
+        ids = [uuid.UUID(str(item)) for item in (job.target_article_ids or [])]
+        stmt = select(Article.id).where(Article.company_domain == job.company_domain, Article.status == "published", Article.lifecycle_status == "active")
+        if ids:
+            stmt = stmt.where(Article.id.in_(ids))
+        article_ids = [item for item in (await db.execute(stmt)).scalars().all()]
+        job.status = "running"
+        job.total = len(article_ids)
+        job.completed = 0
+        job.failed = 0
+        job.last_error = None
+        job.started_at = datetime.utcnow()
+        await db.commit()
+    for article_id in article_ids:
+        try:
+            await index_article(article_id)
+            async with SessionLocal() as progress_db:
+                await set_database_context(progress_db, None, True)
+                progress = await progress_db.get(IndexReprocessJob, uuid.UUID(job_id_str))
+                if progress:
+                    progress.completed += 1
+                    await progress_db.commit()
+        except Exception as exc:
+            async with SessionLocal() as progress_db:
+                await set_database_context(progress_db, None, True)
+                progress = await progress_db.get(IndexReprocessJob, uuid.UUID(job_id_str))
+                if progress:
+                    progress.failed += 1
+                    progress.last_error = str(exc)[:2000]
+                    await progress_db.commit()
+    async with SessionLocal() as db:
+        await set_database_context(db, None, True)
+        job = await db.get(IndexReprocessJob, uuid.UUID(job_id_str))
+        if job:
+            job.status = "failed" if job.failed else "completed"
+            job.completed_at = datetime.utcnow()
+            await db.commit()
+
+
+@celery_app.task(name="reprocess_index_job_task")
+def reprocess_index_job_task(job_id_str: str):
+    """Celery adapter for the shared async reprocess implementation."""
+    sync_run(run_reprocess_index_job(job_id_str))
 
 @celery_app.task(name="recompute_permissions_task")
 def recompute_permissions_task(article_id_str: str):
@@ -208,7 +398,7 @@ def schedule_cloud_connector_syncs():
                 recent = (await db.execute(select(ConnectorJob.id).where(ConnectorJob.connector_id == connector.id, ConnectorJob.status.in_(["queued", "running"])).limit(1))).scalar_one_or_none()
                 if recent:
                     continue
-                job = ConnectorJob(connector_id=connector.id, status="queued", attempts=0)
+                job = ConnectorJob(connector_id=connector.id, requested_by=connector.created_by, status="queued", attempts=0)
                 db.add(job)
                 await db.commit()
                 sync_cloud_connector_task.delay(str(connector.id), str(job.id))

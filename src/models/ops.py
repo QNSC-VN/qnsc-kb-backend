@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import ForeignKey, String, Text, Integer, JSON, Float, DateTime, UniqueConstraint
+from sqlalchemy import ForeignKey, String, Text, Integer, JSON, Float, DateTime, UniqueConstraint, Index
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.models.base import Base, UUIDPrimaryKeyMixin, TimestampMixin
 
 class Connector(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "connectors"
-    __table_args__ = (UniqueConstraint("company_domain", "name", name="uq_connectors_company_name"),)
+    __table_args__ = (Index("uq_connectors_company_name", "company_domain", "name", unique=True),)
 
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     system: Mapped[str] = mapped_column(String(50), nullable=False)  # google_drive, sharepoint
@@ -14,6 +14,9 @@ class Connector(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     last_sync: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     company_domain: Mapped[str] = mapped_column(String(255), index=True, nullable=False, default="local")
+    # Retained for compatibility with pre-Alembic connector rows. Current
+    # scheduling uses connector config and job mode; no API exposes this field.
+    sync_interval_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=60, server_default="60")
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     oauth_subject: Mapped[str | None] = mapped_column(String(255), nullable=True)
     oauth_access_token: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -29,12 +32,31 @@ class ConnectorJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "connector_jobs"
 
     connector_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("connectors.id", ondelete="CASCADE"), nullable=False)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(50), default="pending", nullable=False)  # pending, running, completed, failed
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     connector: Mapped[Connector] = relationship("Connector", back_populates="jobs")
+
+
+class IndexReprocessJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Durable bulk indexing progress and retry state."""
+    __tablename__ = "index_reprocess_jobs"
+
+    company_domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    requested_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="queued", index=True)
+    total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    target_article_ids: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 class NotificationQueue(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "notification_queue"

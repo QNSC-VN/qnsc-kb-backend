@@ -49,5 +49,9 @@ celery_app.conf.update(
             "task": "prune_operational_metrics",
             "schedule": 86400.0,
         },
+        "cleanup-orphaned-source-objects": {
+            "task": "cleanup_orphaned_source_objects",
+            "schedule": 86400.0,
+        },
     },
 )

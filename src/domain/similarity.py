@@ -5,8 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.models.article import Article
 from src.models.user import User
-from src.domain.rbac import AuthorizationService
 from src.domain.permissions import PermissionService
+from src.repositories.article import ArticleRepository
 
 def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", text.lower())).strip()
@@ -19,12 +19,12 @@ def token_similarity(left: str, right: str) -> float:
 
 async def find_similar_documents(db: AsyncSession, user: User, content: str) -> list[dict]:
     normalized = normalize(content)
-    stmt = select(Article).where(Article.status != "deleted", Article.lifecycle_status == "active").options(
+    stmt = select(Article).where(*ArticleRepository._authorized_article_filters(user)).options(
         selectinload(Article.sources),
         selectinload(Article.access_groups),
+        selectinload(Article.departments),
+        selectinload(Article.user_permissions),
     )
-    if not AuthorizationService.has_permission(user, "article.read", requested_scope="global"):
-        stmt = stmt.where(Article.company_domain == user.company_domain)
     matches: list[dict] = []
     for article in (await db.execute(stmt)).scalars().all():
         if not PermissionService.can_view_article(user, article):

@@ -2,11 +2,14 @@
 
 The Gemini transport in llm_client.py — request body, x-goog-api-key header, SSE framing,
 candidate/thought extraction — was fully implemented and completely unreachable:
-`native_gemini` defaulted to False and nothing ever set it, and `_environment_config()`
-only recognised openai/glm/groq. A deployment holding a Gemini key therefore used it for
-embeddings, resolved NO chat provider, and answered every question with a canned extract
-of the top chunk. That fallback reads like a real answer, complete with citations, which
-is why it went unnoticed in develop.
+`native_gemini` defaulted to False and nothing ever set it, and Gemini was not a
+selectable provider. A workspace configured for Gemini therefore used it for embeddings,
+resolved NO chat provider, and answered every question with a canned extract of the top
+chunk. That fallback reads like a real answer, complete with citations, which is why it
+went unnoticed.
+
+The provider itself comes from the admin-managed, encrypted workspace configuration —
+see test_llm_provider_source.py. Process-environment keys are deliberately not a source.
 """
 from __future__ import annotations
 
@@ -38,38 +41,6 @@ def test_gemini_default_url_is_the_api_root_not_a_chat_path():
     # here would 404 on every call.
     assert DEFAULT_BASE_URLS["gemini"].endswith("/v1beta")
     assert "generateContent" not in DEFAULT_BASE_URLS["gemini"]
-
-
-def test_a_gemini_only_deployment_resolves_a_chat_provider(monkeypatch):
-    monkeypatch.setattr(llm_config.settings, "LLM_PROVIDER", None)
-    monkeypatch.setattr(llm_config.settings, "OPENAI_API_KEY", None)
-    monkeypatch.setattr(llm_config.settings, "GROQ_API_KEY", None)
-    monkeypatch.setattr(llm_config.settings, "GEMINI_API_KEY", "a-real-key")
-    monkeypatch.setattr(llm_config.settings, "GEMINI_MODEL", "gemini-flash-lite-latest")
-
-    config = llm_config._environment_config()
-
-    assert config is not None, "a Gemini key must yield a chat provider, not the fallback"
-    assert config.provider == "gemini"
-    # LLM_MODEL names an OpenAI-shaped model; Gemini has its own setting.
-    assert config.model == "gemini-flash-lite-latest"
-
-
-def test_an_explicit_provider_still_wins_over_the_gemini_fallback(monkeypatch):
-    monkeypatch.setattr(llm_config.settings, "LLM_PROVIDER", None)
-    monkeypatch.setattr(llm_config.settings, "OPENAI_API_KEY", "an-openai-key")
-    monkeypatch.setattr(llm_config.settings, "GEMINI_API_KEY", "a-real-key")
-
-    assert llm_config._environment_config().provider == "openai"
-
-
-def test_a_mock_gemini_key_does_not_configure_a_provider(monkeypatch):
-    monkeypatch.setattr(llm_config.settings, "LLM_PROVIDER", None)
-    monkeypatch.setattr(llm_config.settings, "OPENAI_API_KEY", None)
-    monkeypatch.setattr(llm_config.settings, "GROQ_API_KEY", None)
-    monkeypatch.setattr(llm_config.settings, "GEMINI_API_KEY", "mock")
-
-    assert llm_config._environment_config() is None
 
 
 @pytest.mark.parametrize(

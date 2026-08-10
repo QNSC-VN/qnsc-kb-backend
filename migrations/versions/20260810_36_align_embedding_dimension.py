@@ -17,8 +17,13 @@ corpus where some vectors are comparable and others are not. Re-embedding is the
 correct path, and it is the operator's decision to schedule.
 
 Revision ID: 20260810_36
-Revises: 20260807_35
+Revises: 20260810_50
 Create Date: 2026-08-10
+
+Authored on main against 20260807_35, then re-pointed onto develop's head when main was
+merged in: the two branches had both added migrations after 20260807_35, and Alembic
+takes one linear head. Nothing between 20260807_35 and 20260810_50 touches
+article_chunks.embedding, so running later changes nothing about what this does.
 """
 
 from alembic import op
@@ -28,7 +33,7 @@ from src.core.config import settings
 
 
 revision = "20260810_36"
-down_revision = "20260807_35"
+down_revision = "20260810_50"
 branch_labels = None
 depends_on = None
 

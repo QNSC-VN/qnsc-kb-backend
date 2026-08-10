@@ -1,18 +1,22 @@
 """Embedding providers.
 
-Two implementations behind one pair of functions:
+Two implementations behind one pair of functions, selected by the SHAPE of
+EMBEDDING_MODEL — `bge-*`, `minilm` and `sentence-transformers/*` are loaded in-process,
+anything else is sent to an HTTP API:
 
-  hosted  — an HTTP embedding API. The default, and what deployed environments use.
-  local   — SentenceTransformer in-process. Requires torch + sentence-transformers,
-            which are an OPTIONAL dependency group (`ml`) and are not installed in a
-            deployed image.
+  local   — SentenceTransformer in-process. The default. Requires torch +
+            sentence-transformers, the `ml` dependency group, which the api and worker
+            images therefore both install.
+  hosted  — an HTTP embedding API (Gemini's batchEmbedContents shape). Kept working, and
+            what the deployment used briefly, but not the default.
 
-WHY THE DEFAULT IS HOSTED. The API embeds the search QUERY on every search, so a local
-model has to live in the API image as well as the worker's: ~2.3 GB of weights plus torch,
-in a container that otherwise needs neither. That set the image size (3.5 GB compressed),
-the task memory (2 GB floor before serving a request), the ECR bill and the cold-start
-time — on Fargate Spot, where a task can be replaced at any moment, all of it is paid
-again and again to embed a few hundred characters.
+WHAT THE LOCAL DEFAULT COSTS. The API embeds the search QUERY on every search, so the
+model lives in the API image as well as the worker's: ~2.3 GB of weights plus torch, in a
+container that otherwise needs neither. That drives the image size, the task memory floor
+before it can serve a request, the registry bill and the cold-start time — on a spot
+instance, where a task can be replaced at any moment, all of it is paid again and again
+to embed a few hundred characters. It buys keeping every document and query inside the
+deployment, which is why it is the default here.
 
 QUERIES AND DOCUMENTS MUST USE THE SAME MODEL. A query embedded by one model and a chunk
 embedded by another are points in unrelated spaces, and the cosine distance between them

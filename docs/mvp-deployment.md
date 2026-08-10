@@ -24,8 +24,8 @@ network.
    curl https://kb.example.com/health/live
    ```
 
-The API container runs Alembic migrations before starting. Do not enable
-`AUTO_CREATE_SCHEMA` in production.
+The API container runs Alembic migrations before starting. `AUTO_CREATE_SCHEMA`
+is disabled in every environment; schema changes must go through Alembic.
 
 ## Cloud connectors
 
@@ -43,7 +43,7 @@ automatically. New documents remain pending until governance approval.
 
 ## Operations
 
-- Back up the PostgreSQL volume and source-storage volume/object bucket.
+- Back up the PostgreSQL volume, connector runtime volume, and private Cloudflare R2 bucket together.
 - Inspect connector `last_error` and Celery logs after a failed sync.
 - Keep the local BGE-M3 model volume/image on a host sized for inference; use
   object storage for source files when the VPS disk is not durable.

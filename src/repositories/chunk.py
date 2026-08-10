@@ -1,14 +1,16 @@
 import uuid
 import re
+import hashlib
 import structlog
 from typing import Sequence
-from sqlalchemy import select, delete, update, and_, or_, text, func, exists
+from sqlalchemy import select, delete, update, and_, or_, text, func, exists, not_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from src.models.chunk import ParentChunk, ArticleChunk, ChunkMetadata
-from src.models.article import Article
+from src.models.article import Article, ArticleTag, ArticleUserPermission
 from src.models.user import Department
 from src.core.config import settings
+from src.repositories.article import ArticleRepository
 
 logger = structlog.get_logger()
 
@@ -53,34 +55,21 @@ class ChunkRepository:
         """Return only citation chunks still visible to the current user."""
         if not chunk_ids:
             return set()
-        from src.domain.permissions import PermissionService
         from src.domain.rbac import AuthorizationService
 
-        conditions = [
-            ArticleChunk.id.in_(chunk_ids),
-            Article.status == "published",
-            Article.lifecycle_status == "active",
-            exists(select(Department.id).where(
-                Department.company_domain == Article.company_domain,
-                Department.name == Article.dept,
-                Department.active.is_(True),
-            )),
-        ]
-        if not AuthorizationService.has_full_company_article_access(user) and not AuthorizationService.has_narrow_article_access(user):
-            conditions.append(ArticleChunk.access_group_bitmap.op("&")(PermissionService.calculate_user_bitmask(user)) != 0)
-        if not AuthorizationService.has_permission(user, "article.read", requested_scope="global"):
-            conditions.append(Article.company_domain == user.company_domain)
+        conditions = [ArticleChunk.id.in_(chunk_ids), Article.status == "published", *ArticleRepository._authorized_article_filters(user)]
         result = await self.db.execute(
             select(ArticleChunk)
             .join(Article, Article.id == ArticleChunk.article_id)
-            .options(selectinload(ArticleChunk.article))
+            .options(
+                selectinload(ArticleChunk.article).selectinload(Article.sources),
+                selectinload(ArticleChunk.article).selectinload(Article.access_groups),
+                selectinload(ArticleChunk.article).selectinload(Article.departments),
+                selectinload(ArticleChunk.article).selectinload(Article.user_permissions),
+            )
             .where(*conditions)
         )
-        return {
-            str(chunk.id)
-            for chunk in result.scalars().all()
-            if PermissionService.can_view_article(user, chunk.article)
-        }
+        return {str(chunk.id) for chunk in result.scalars().all()}
 
     async def update_permissions(self, article_id: uuid.UUID, bitmap: int, sensitivity: str, visibility: str, dept: str) -> None:
         await self.db.execute(
@@ -100,6 +89,7 @@ class ChunkRepository:
         query: str,
         query_embedding: list[float] | None,
         user_bitmask: int,
+        user: object,
         limit: int = 5,
         filters: dict | None = None
     ) -> list[ArticleChunk]:
@@ -115,31 +105,59 @@ class ChunkRepository:
         # Base filter: permissions bitwise AND
         # We also enforce that the article must be published (not draft or soft deleted)
         where_clauses = [
-            # Join with articles to check status is published
-            Article.status == "published"
-            ,Article.lifecycle_status == "active"
+            # Only successfully indexed, active published articles are RAG candidates.
+            Article.status == "published",
+            Article.lifecycle_status == "active",
+            Article.index_status == "ready",
         ]
+        # Apply the complete Article authorization predicate in the retrieval
+        # query. The bitmask remains the fast native ACL for ordinary content;
+        # explicit-user visibility and explicit denies are relational policy
+        # records and are included in the same SQL statement.
+        where_clauses.extend(ArticleRepository._authorized_article_filters(user))
+        explicit_allow = exists(select(ArticleUserPermission.id).where(
+            ArticleUserPermission.article_id == Article.id,
+            ArticleUserPermission.user_id == user.id,
+            ArticleUserPermission.effect == "allow",
+        ))
+        explicit_deny = exists(select(ArticleUserPermission.id).where(
+            ArticleUserPermission.article_id == Article.id,
+            ArticleUserPermission.user_id == user.id,
+            ArticleUserPermission.effect == "deny",
+        ))
+        where_clauses.append(not_(explicit_deny))
         if not filters.get("bypass_access_groups"):
-            where_clauses.insert(0, ArticleChunk.access_group_bitmap.op("&")(user_bitmask) != 0)
+            where_clauses.append(or_(
+                ArticleChunk.access_group_bitmap.op("&")(user_bitmask) != 0,
+                explicit_allow,
+            ))
 
         if filters.get("company_domain"):
             where_clauses.append(Article.company_domain == filters["company_domain"])
 
-        # Keep retrieval aligned with article browsing. Department-scoped
-        # readers may search public content plus their explicitly owned
-        # departments; own-scoped readers may search public content plus
-        # their own articles. The final PermissionService check below remains
-        # authoritative for group ACLs.
+        # SearchService narrows users with department- or owner-scoped read
+        # permissions before retrieval. Keep those effective scopes in the
+        # same SQL predicate as the Article authorization filters; otherwise
+        # a department/own search could retrieve a broader candidate set and
+        # rely on a later Python check. Public content remains searchable
+        # alongside the user's effective narrow scope.
         scope_conditions = [Article.sensitivity == "public"]
-        if filters.get("departments") is not None:
-            department_names = list(filters["departments"])
-            scope_conditions.append(or_(Article.dept.in_(department_names), Article.departments.any(Department.name.in_(department_names))))
-        if filters.get("owner_id") is not None:
+        department_names = {
+            str(item).strip()
+            for item in filters.get("departments", []) or []
+            if str(item).strip()
+        }
+        if department_names:
+            scope_conditions.append(
+                or_(
+                    Article.dept.in_(department_names),
+                    Article.departments.any(Department.name.in_(department_names)),
+                )
+            )
+        if filters.get("owner_id"):
             scope_conditions.append(Article.owner_id == filters["owner_id"])
         if len(scope_conditions) > 1:
             where_clauses.append(or_(*scope_conditions))
-        elif filters.get("departments") is not None or filters.get("owner_id") is not None:
-            where_clauses.append(scope_conditions[0])
 
         # A deactivated department is no longer a valid content scope.
         where_clauses.append(exists(select(Department.id).where(
@@ -158,6 +176,8 @@ class ChunkRepository:
             where_clauses.append(Article.status == filters["status"])
         if filters.get("language"):
             where_clauses.append(Article.language == filters["language"])
+        if filters.get("tag"):
+            where_clauses.append(Article.tags.any(ArticleTag.tag == filters["tag"]))
         if filters.get("date_from"):
             where_clauses.append(Article.created_at >= filters["date_from"])
         if filters.get("date_to"):
@@ -184,7 +204,8 @@ class ChunkRepository:
         }
         logger.info(
             "Search candidate scope",
-            query=query,
+            query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
+            query_length=len(query),
             user_access_bitmask=user_bitmask,
             filters=filters,
             embedding_available=query_embedding is not None,
@@ -206,17 +227,20 @@ class ChunkRepository:
                     )
                 )
                 .order_by(ArticleChunk.embedding.cosine_distance(query_embedding))
-                .limit(max(30, limit * 6))
+                .limit(max(settings.RAG_CANDIDATE_POOL_SIZE, limit))
                 .options(
                     selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks),
-                    selectinload(ArticleChunk.article),
+                    selectinload(ArticleChunk.article).selectinload(Article.sources),
+                    selectinload(ArticleChunk.article).selectinload(Article.access_groups),
+                    selectinload(ArticleChunk.article).selectinload(Article.departments),
+                    selectinload(ArticleChunk.article).selectinload(Article.user_permissions),
                 )
             )
             vec_res = await self.db.execute(vector_stmt)
             vector_results = vec_res.scalars().all()
             logger.info(
                 "Search vector candidates loaded",
-                query=query,
+                query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
                 vector_result_count=len(vector_results),
             )
 
@@ -240,17 +264,20 @@ class ChunkRepository:
                     func.plainto_tsquery("simple", query),
                 ).desc()
             )
-            .limit(30)
+            .limit(max(settings.RAG_CANDIDATE_POOL_SIZE, limit))
             .options(
                 selectinload(ArticleChunk.parent_chunk).selectinload(ParentChunk.child_chunks),
-                selectinload(ArticleChunk.article),
+                selectinload(ArticleChunk.article).selectinload(Article.sources),
+                selectinload(ArticleChunk.article).selectinload(Article.access_groups),
+                selectinload(ArticleChunk.article).selectinload(Article.departments),
+                selectinload(ArticleChunk.article).selectinload(Article.user_permissions),
             )
         )
         key_res = await self.db.execute(keyword_stmt)
         keyword_results = key_res.scalars().all()
         logger.info(
             "Search keyword candidates loaded",
-            query=query,
+            query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
             keyword_result_count=len(keyword_results),
         )
 
@@ -272,7 +299,7 @@ class ChunkRepository:
         sorted_results = sorted(rrf_scores.values(), key=lambda x: x["score"], reverse=True)
         logger.info(
             "Search candidates merged",
-            query=query,
+            query_hash=hashlib.sha256(query.encode("utf-8")).hexdigest(),
             merged_result_count=len(sorted_results),
             returned_result_count=min(len(sorted_results), limit),
         )

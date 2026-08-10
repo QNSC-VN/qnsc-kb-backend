@@ -121,7 +121,8 @@ class SearchService:
             query=retrieval_query,
             query_embedding=embedding,
             user_bitmask=user_bitmask,
-            limit=max(30, limit * 6),
+            user=user,
+            limit=limit,
             filters=effective_filters
         )
         reranking_enabled = not self.feature_flags or await self.feature_flags.is_enabled("rag.reranker", user)
@@ -171,6 +172,7 @@ class SearchService:
             
             formatted_results.append({
                 "chunk_id": str(chunk.id),
+                "parent_chunk_id": str(chunk.parent_chunk_id),
                 "article_id": str(article.id),
                 "title": article.title,
                 "dept": article.dept,
@@ -181,8 +183,11 @@ class SearchService:
                 "parent_text": parent.text if parent else chunk.chunk_text,
                 "child_texts": [child.chunk_text for child in parent.child_chunks] if parent else [chunk.chunk_text],
                 "section_ref": parent.section_ref if parent else None,
+                "heading": (parent.heading if parent else None) or (parent.section_ref if parent else None),
+                "chunk_type": getattr(chunk, "chunk_type", "text"),
+                "chunking_version": getattr(chunk, "chunking_version", None),
                 "page_number": chunk.page_number if chunk.page_number is not None else (parent.page_number if parent else None),
-                "source_url": f"/api/v1/articles/{article.id}/source",
+                "source_url": f"/api/v1/articles/{article.id}/source" + (f"?page={chunk.page_number or parent.page_number}" if (chunk.page_number or (parent and parent.page_number)) else ""),
                 "score": score
             })
 
