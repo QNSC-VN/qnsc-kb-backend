@@ -82,12 +82,17 @@ class UserRepository:
     async def update(self, user: User) -> User:
         self.db.add(user)
         await self.db.commit()
-        await self.db.refresh(user)
-        return user
+        # Re-FETCH rather than refresh(). refresh() expires the instance and reloads its
+        # COLUMNS only, so every relationship loaded by get_by_id is dropped — and each
+        # caller of this method hands the result to a response builder that walks
+        # user.roles -> role.permissions. Those then lazy-load inside an async request,
+        # which asyncpg cannot do, and the endpoint 500s with MissingGreenlet AFTER the
+        # write has already committed.
+        return await self.get_by_id(user.id) or user
 
     async def update_user_groups(self, user: User, groups: list[AccessGroup]) -> User:
         user.groups = groups
         self.db.add(user)
         await self.db.commit()
-        await self.db.refresh(user)
-        return user
+        # Same reason as update() above.
+        return await self.get_by_id(user.id) or user
