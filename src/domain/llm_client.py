@@ -29,7 +29,17 @@ def resolve_provider(model_override: str | None = None) -> Provider | None:
     config = get_runtime_config()
     if config is None:
         return None
-    return Provider(config.provider, model_override or config.model, config.base_url, config.api_key)
+    # Gemini is not OpenAI-compatible — different request body, different auth header,
+    # different SSE framing, different response shape. All of that is implemented below
+    # and was unreachable: native_gemini defaulted to False and nothing ever set it, so
+    # the flag existed while the path it guards could not run.
+    return Provider(
+        config.provider,
+        model_override or config.model,
+        config.base_url,
+        config.api_key,
+        native_gemini=config.provider == "gemini",
+    )
 
 
 def _gemini_contents(messages: list[dict[str, str]]) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:

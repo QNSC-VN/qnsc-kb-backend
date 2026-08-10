@@ -10,11 +10,15 @@ from src.core.config import settings
 from src.core.secrets import decrypt_secret, encrypt_secret
 from src.models.ops import LLMProviderConfig
 
-SUPPORTED_PROVIDERS = {"openai", "glm", "groq"}
+SUPPORTED_PROVIDERS = {"openai", "glm", "groq", "gemini"}
 DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1/chat/completions",
     "glm": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     "groq": "https://api.groq.com/openai/v1/chat/completions",
+    # NOT a chat-completions endpoint like the others: the Gemini transport in
+    # llm_client.py appends "/models/<model>:generateContent" itself, so this is the API
+    # ROOT. Pointing it at a full path produces a 404 on every call.
+    "gemini": settings.GEMINI_API_BASE_URL.rstrip("/"),
 }
 
 
@@ -48,14 +52,29 @@ def _environment_config() -> RuntimeLLMConfig | None:
             provider = "openai"
         elif settings.GROQ_API_KEY and settings.GROQ_API_KEY != "mock":
             provider = "groq"
+        elif settings.GEMINI_API_KEY and settings.GEMINI_API_KEY != "mock":
+            # Last, so an explicitly configured provider always wins — but present, so a
+            # deployment holding only a Gemini key gets real answers. Without this branch
+            # GEMINI_API_KEY powered embeddings ONLY: resolve_provider() returned None and
+            # every question fell back to a canned extract of the top chunk, which reads
+            # like a working answer and is why nobody noticed.
+            provider = "gemini"
         else:
             return None
-    api_key = settings.OPENAI_API_KEY if provider == "openai" else settings.GROQ_API_KEY if provider == "groq" else settings.GLM_API_KEY
+    api_key = (
+        settings.OPENAI_API_KEY if provider == "openai"
+        else settings.GROQ_API_KEY if provider == "groq"
+        else settings.GEMINI_API_KEY if provider == "gemini"
+        else settings.GLM_API_KEY
+    )
     if not api_key or api_key == "mock":
         return None
     model = settings.LLM_MODEL
     if provider == "groq" and model == "gpt-4o":
         model = "llama-3.3-70b-versatile"
+    if provider == "gemini":
+        # LLM_MODEL names an OpenAI-shaped model by default; Gemini has its own setting.
+        model = settings.GEMINI_MODEL
     return RuntimeLLMConfig(provider, model, (settings.LLM_BASE_URL or DEFAULT_BASE_URLS[provider]).rstrip("/"), api_key)
 
 
