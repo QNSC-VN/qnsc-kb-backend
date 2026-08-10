@@ -33,7 +33,7 @@ pypdf = "^5.4.0"
 python-docx = "^1.1.2"
 openpyxl = "^3.1.5"
 python-pptx = "^1.0.2"
-pillow = "^11.1.0"
+pillow = "^12.0.0"
 pymupdf = "^1.25.3"
 # 0.0.2 is the last MarkItDown release compatible with this project's
 # NumPy 1.x constraint (required by the local Paddle/Torch OCR stack).
@@ -71,7 +71,7 @@ torch = { version = "2.6.0", source = "pytorch-cpu" }
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.2"
 pytest-asyncio = "^0.23.7"
-black = "^24.4.2"
+black = "^26.0.0"
 mypy = "^1.10.0"
 
 [build-system]

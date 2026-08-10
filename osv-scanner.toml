@@ -1,0 +1,27 @@
+# osv-scanner configuration.
+#
+# Entries here suppress a finding for the whole repository, so each one needs a reason
+# that says why the vulnerable code cannot run here — not merely that fixing it is
+# inconvenient. Every entry carries an expiry so a suppression cannot outlive its
+# justification: once `ignoreUntil` passes, the scan fails again and the claim gets
+# re-checked.
+
+[[IgnoredVulns]]
+id = "GHSA-wj6h-64fc-37mp"
+ignoreUntil = 2026-11-30
+reason = """Minerva timing attack on P-256 in python-ecdsa. There is NO patched release \
+— upstream considers a constant-time implementation out of scope for pure Python, so the \
+advisory has no fixed version and cannot be resolved by upgrading (0.19.2 is latest).
+
+ecdsa reaches this project only as a transitive dependency of python-jose, which pulls it \
+in to support the ES* JWT algorithms. This application never uses them: tokens it issues \
+are signed HS256, and the Entra id_tokens it verifies are RS256. There is no ES256/ES384 \
+and no EC key material anywhere in src/, so the affected code path is unreachable.
+
+Re-check on expiry: if an EC algorithm is ever introduced, or python-jose is replaced \
+(PyJWT drops the ecdsa dependency entirely), this entry must go rather than be extended."""
+
+[[IgnoredVulns]]
+id = "PYSEC-2026-1325"
+ignoreUntil = 2026-11-30
+reason = "The same Minerva timing attack as GHSA-wj6h-64fc-37mp, under its PYSEC id. See that entry."
