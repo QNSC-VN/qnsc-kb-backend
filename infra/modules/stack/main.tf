@@ -138,6 +138,13 @@ locals {
     { name = "AUTO_CREATE_SCHEMA", value = "false" },
     { name = "ENABLE_RLS", value = "true" },
 
+    // The first administrator is created by scripts/create_admin.py as a one-off task,
+    // which is how develop's was made. Leaving the startup bootstrap ENABLED would mean
+    // storing a standing admin password in the secret bundle for an account that already
+    // exists — and validate_production refuses to boot while that password is still the
+    // development default, which is what took the API down after the SSO change landed.
+    { name = "BOOTSTRAP_ADMIN_ENABLED", value = "false" },
+
     { name = "SOURCE_STORAGE_BACKEND", value = "r2" },
     { name = "SOURCE_STORAGE_BUCKET", value = data.terraform_remote_state.storage.outputs["${replace(var.product, "-", "_")}_sources_name"] },
     { name = "S3_ENDPOINT_URL", value = data.terraform_remote_state.storage.outputs["${replace(var.product, "-", "_")}_sources_endpoint"] },
