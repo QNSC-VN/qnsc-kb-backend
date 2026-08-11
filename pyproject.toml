@@ -72,6 +72,16 @@ torch = { version = "^2.13.0", source = "pytorch-cpu" }
 # GHSA-fgcw, both HIGH). 5.5.0 is the first release clear of them.
 transformers = "^5.15.0"
 
+# ONNX Runtime: the same embedding model without torch or transformers. Roughly 2 GB
+# smaller in every image that embeds, and faster on CPU. Optional because the torch
+# group is still the reference implementation — see EMBEDDING_RUNTIME.
+[tool.poetry.group.onnx]
+optional = true
+
+[tool.poetry.group.onnx.dependencies]
+onnxruntime = "^1.24.0"
+tokenizers = "^0.22.0"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.0"
 pytest-asyncio = "^1.4.0"
