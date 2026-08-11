@@ -499,15 +499,19 @@ module "worker" {
       // clamd loads the whole database before it answers anything, so the start period
       // has to cover a cold load or the task is killed and restarted forever.
       //
-      // 600, not 300: the worker image is ~3.4 GB since embeddings became local, and a
-      // measured task took 3m12s from created to started on the pull alone. The old
-      // window left clamd almost no room after that.
+      // 300 is the CEILING, not a choice: ECS rejects anything higher —
+      //   ClientException: Health check startPeriod must be less than or equal to the
+      //   maximum allowed value 300
+      // I raised it to 600 on the theory that the ~3.4 GB image pull had eaten the
+      // window; that was wrong twice over. The pull happens BEFORE the container starts,
+      // so it never consumes the start period at all, and the limit forbids it regardless.
+      // The memory above is the actual fix.
       healthCheck = {
         command     = ["CMD-SHELL", "clamdcheck.sh || exit 1"]
         interval    = 60
         timeout     = 10
         retries     = 3
-        startPeriod = 600
+        startPeriod = 300
       }
       logConfiguration = {
         logDriver = "awslogs"
