@@ -115,6 +115,24 @@ class Settings(BaseSettings):
     # spaces, and their distance is meaningless rather than merely wrong.
     EMBEDDING_MODEL: str = "BAAI/bge-m3"
     EMBEDDING_VERSION: str = "bge-m3-v1"
+
+    # HOW the model runs, kept separate from WHICH model runs. "torch" is
+    # sentence-transformers and is what the stored corpus was embedded with; "onnx" runs
+    # the identical graph on onnxruntime with no torch and no transformers, which is
+    # ~2 GB less in every image that embeds. Same vectors either way — the parity test
+    # in tests/unit/test_embedding_backends.py is what proves that for a given model.
+    EMBEDDING_RUNTIME: str = "torch"
+    # Where the baked ONNX export lives: model.onnx + tokenizer.json.
+    EMBEDDING_ONNX_DIR: str = "/opt/embedding-onnx"
+    # bge-* are CLS-pooled. An ONNX export does not carry the pooling config that
+    # sentence-transformers reads, so it is stated rather than inferred — the wrong
+    # choice yields valid vectors in the wrong space and degrades retrieval silently.
+    EMBEDDING_ONNX_POOLING: str = "cls"
+    # A 0.5 vCPU task oversubscribes itself with onnxruntime's default thread pool and
+    # spends longer scheduling than embedding.
+    EMBEDDING_ONNX_THREADS: int = 1
+    EMBEDDING_MAX_TOKENS: int = 512
+    EMBEDDING_BATCH_SIZE: int = 32
     CHUNKING_VERSION: str = "v2-structure-aware"
     EMBEDDING_DIMENSION: int | None = None
     LLM_MODEL: str = "gemma-4-26b-a4b-it"

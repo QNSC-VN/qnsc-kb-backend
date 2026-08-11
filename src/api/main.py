@@ -16,7 +16,7 @@ from src.models.chunk import ArticleChunk
 from src.models.ops import ApiRequestMetric
 from src.core.metrics import record_request, prometheus_text
 from src.core.tracing import configure_tracing, get_tracer, trace
-from src.lib.embeddings import BGEModelSingleton
+from src.lib.embeddings import warm_up as warm_up_embeddings
 import structlog
 
 logger = structlog.get_logger()
@@ -115,9 +115,9 @@ async def initialize_resources() -> None:
     # Keep model initialization out of request paths. Each API process loads
     # its singleton once at startup; subsequent chat, search, and indexing
     # calls reuse the same in-memory model.
-    if settings.OPENAI_API_KEY != "mock" and settings.EMBEDDING_MODEL != "mock":
+    if settings.EMBEDDING_MODEL != "mock":
         try:
-            await asyncio.to_thread(BGEModelSingleton.get_model)
+            await asyncio.to_thread(warm_up_embeddings)
         except Exception as exc:
             logger.warning("Embedding model preload failed; keyword search remains available", error=str(exc))
 
