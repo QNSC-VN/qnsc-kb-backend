@@ -481,18 +481,33 @@ module "worker" {
       name      = "clamav"
       image     = "clamav/clamav:1.4"
       essential = true
-      // The signature database is ~2 GB resident. This is the largest single reason
-      // the worker task is sized as it is.
+      // 2048, matching what the comment beside it always said: the signature database is
+      // ~2 GB resident. At 1024 it did not fit, and the way that presented is worth
+      // recording — clamd came up only on the runs where the signature UPDATE had
+      // FAILED:
+      //
+      //   ERROR: Database test FAILED.  ...  Update failed.
+      //   socket found, clamd started.
+      //
+      // A failed update leaves the older, smaller database, which fits; a successful one
+      // does not. So the task cycled — two tasks killed for "failed container health
+      // checks" before a third happened to get a failed update and went healthy. Roughly
+      // 30 minutes per worker deploy, and it looked intermittent rather than like a
+      // sizing error.
       cpu    = 256
-      memory = 1024
+      memory = 2048
       // clamd loads the whole database before it answers anything, so the start period
       // has to cover a cold load or the task is killed and restarted forever.
+      //
+      // 600, not 300: the worker image is ~3.4 GB since embeddings became local, and a
+      // measured task took 3m12s from created to started on the pull alone. The old
+      // window left clamd almost no room after that.
       healthCheck = {
         command     = ["CMD-SHELL", "clamdcheck.sh || exit 1"]
         interval    = 60
         timeout     = 10
         retries     = 3
-        startPeriod = 300
+        startPeriod = 600
       }
       logConfiguration = {
         logDriver = "awslogs"
