@@ -2,7 +2,8 @@ from typing import AsyncGenerator
 from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 import jwt
-from sqlalchemy import text
+from sqlalchemy import event, text
+from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from src.core.config import settings
 from src.models import User
@@ -46,21 +47,58 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         try:
             yield session
         finally:
-            # A pooled connection must never retain another request's tenant
-            # settings. Roll back any open work, reset session variables, and
-            # return the connection cleanly to the pool.
-            try:
-                await session.rollback()
-                await session.execute(text("RESET app.company_domain"))
-                await session.execute(text("RESET app.global_admin"))
-                await session.execute(text("RESET app.global_article_access"))
-                await session.execute(text("RESET app.global_identity_access"))
-                await session.execute(text("RESET app.global_connector_access"))
-                await session.execute(text("RESET app.global_governance_access"))
-                await session.execute(text("RESET app.user_id"))
-                await session.commit()
-            except Exception:
-                await session.rollback()
+            # No RESET of app.* here any more, deliberately. The tenant context is
+            # TRANSACTION-local (see set_database_context), so it is gone the moment this
+            # session's last transaction ends — a pooled connection cannot carry it to the
+            # next request. The old reset was what turned a post-commit connection swap
+            # into a request running with no context at all.
+            await session.rollback()
+
+
+# The tenant context, re-applied at the start of EVERY transaction.
+#
+# `true` is the last argument to each set_config: these are TRANSACTION-local, not
+# session-local. That one letter is the whole fix.
+#
+# Session-scoped values live on the CONNECTION, and an AsyncSession releases its
+# connection back to the pool on commit and takes one again for the next statement — a
+# swap measured on 11 of 12 runs. get_db() then RESETs app.* before returning a
+# connection, correctly, so no request inherits another's tenant. The two mechanisms
+# fought each other: after any commit the session could pick up a cleaned connection and
+# every following statement ran with NO context. On a FORCEd-RLS table that means reads
+# return nothing — /ai/ask surfaced it as "Could not refresh instance", but a plain SELECT
+# after a commit would simply have returned zero rows and said nothing at all.
+#
+# Transaction-local values cannot leak, because they die with the transaction. That makes
+# get_db's RESET block unnecessary, which is why it is gone.
+_TENANT_SQL = text(
+    "SELECT set_config('app.company_domain', :company_domain, true),"
+    " set_config('app.global_admin', :global_admin, true),"
+    " set_config('app.global_article_access', :global_article_access, true),"
+    " set_config('app.global_identity_access', :global_identity_access, true),"
+    " set_config('app.global_connector_access', :global_connector_access, true),"
+    " set_config('app.global_governance_access', :global_governance_access, true),"
+    " set_config('app.user_id', :user_id, true)"
+)
+
+TENANT_CONTEXT_KEY = "tenant_context"
+
+
+@event.listens_for(Session, "after_begin")
+def _reapply_tenant_context(session: Session, transaction, connection) -> None:
+    """Re-issue the session's tenant context whenever a transaction begins.
+
+    Including the implicit transaction that follows a commit, on whatever pooled
+    connection it lands on. Without this, transaction-local settings would be correct but
+    would vanish at the first commit; with it, they are correct for every statement and
+    no call site has to remember anything.
+
+    Sessions that never set a context — the migrator, workers, startup — are skipped, so
+    they keep failing closed under RLS rather than silently acquiring someone else's.
+    """
+    context = session.info.get(TENANT_CONTEXT_KEY)
+    if context:
+        connection.execute(_TENANT_SQL, context)
 
 
 async def set_database_context(
@@ -73,18 +111,28 @@ async def set_database_context(
     global_connector_access: bool = False,
     global_governance_access: bool = False,
 ) -> None:
-    await db.execute(
-        text("SELECT set_config('app.company_domain', :company_domain, false), set_config('app.global_admin', :global_admin, false), set_config('app.global_article_access', :global_article_access, false), set_config('app.global_identity_access', :global_identity_access, false), set_config('app.global_connector_access', :global_connector_access, false), set_config('app.global_governance_access', :global_governance_access, false), set_config('app.user_id', :user_id, false)"),
-        {
-            "company_domain": company_domain or "",
-            "global_admin": "true" if global_admin else "false",
-            "global_article_access": "true" if global_article_access else "false",
-            "global_identity_access": "true" if global_identity_access else "false",
-            "global_connector_access": "true" if global_connector_access else "false",
-            "global_governance_access": "true" if global_governance_access else "false",
-            "user_id": user_id or "",
-        },
-    )
+    """Bind this session to a tenant for the rest of its life.
+
+    Stored on the session AND applied now: stored so `_reapply_tenant_context` can restore
+    it after every commit, applied so the transaction already open picks it up.
+    """
+    context = {
+        "company_domain": company_domain or "",
+        "global_admin": "true" if global_admin else "false",
+        "global_article_access": "true" if global_article_access else "false",
+        "global_identity_access": "true" if global_identity_access else "false",
+        "global_connector_access": "true" if global_connector_access else "false",
+        "global_governance_access": "true" if global_governance_access else "false",
+        "user_id": user_id or "",
+    }
+    # Test doubles stand in for the session in several unit tests and only record the
+    # statements they are given; they have no sync_session to carry `info`. Applying the
+    # context still works for them, which is what those tests assert — only the
+    # re-application after a commit needs the real thing.
+    info = getattr(getattr(db, "sync_session", None), "info", None)
+    if info is not None:
+        info[TENANT_CONTEXT_KEY] = context
+    await db.execute(_TENANT_SQL, context)
 
 async def get_current_user(
     db: AsyncSession = Depends(get_db),
