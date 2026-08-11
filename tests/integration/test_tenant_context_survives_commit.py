@@ -26,12 +26,34 @@ import asyncio
 import os
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 pytestmark = pytest.mark.skipif(
     not os.getenv("DATABASE_URL", "").startswith("postgresql"),
     reason="needs a real PostgreSQL connection pool; the behaviour under test is the pool's",
 )
+
+
+@pytest_asyncio.fixture
+async def sessions():
+    """A pool of this test's own, disposed with it.
+
+    Deliberately not src.api.deps.SessionLocal: that engine is created at import and
+    binds to whichever event loop imported it, while pytest-asyncio gives each test a new
+    one — the mismatch shows up as "Event loop is closed" and "another operation is in
+    progress", neither of which has anything to do with what is being tested.
+
+    The listener under test is registered on the Session CLASS, so any sessionmaker
+    exercises it.
+    """
+    engine = create_async_engine(os.environ["DATABASE_URL"], pool_size=6, max_overflow=0)
+    factory = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
+    try:
+        yield factory
+    finally:
+        await engine.dispose()
 
 READ_CONTEXT = text(
     "SELECT current_setting('app.user_id', true), current_setting('app.company_domain', true)"
@@ -41,16 +63,14 @@ USER_ID = "98b75957-497b-44ec-b7a8-e7c11e44e769"
 DOMAIN = "qnsc.vn"
 
 
-async def _strip_pooled_connections(sessions: int = 8) -> None:
+async def _strip_pooled_connections(factory, count: int = 6) -> None:
     """Fill the pool with connections carrying no app.* settings.
 
     Reproduces what get_db's RESET block used to leave behind, and what any connection
     that has never served a tenant-scoped request looks like anyway.
     """
-    from src.api.deps import SessionLocal
-
     async def one() -> None:
-        async with SessionLocal() as session:
+        async with factory() as session:
             for name in (
                 "app.company_domain",
                 "app.global_admin",
@@ -63,16 +83,16 @@ async def _strip_pooled_connections(sessions: int = 8) -> None:
                 await session.execute(text(f"RESET {name}"))
             await session.commit()
 
-    await asyncio.gather(*(one() for _ in range(sessions)))
+    await asyncio.gather(*(one() for _ in range(count)))
 
 
 @pytest.mark.asyncio
-async def test_context_survives_a_commit():
-    from src.api.deps import SessionLocal, set_database_context
+async def test_context_survives_a_commit(sessions):
+    from src.api.deps import set_database_context
 
-    await _strip_pooled_connections()
+    await _strip_pooled_connections(sessions)
 
-    async with SessionLocal() as session:
+    async with sessions() as session:
         await set_database_context(session, DOMAIN, False, USER_ID)
         before = list((await session.execute(READ_CONTEXT)).first())
         assert before == [USER_ID, DOMAIN]
@@ -88,13 +108,13 @@ async def test_context_survives_a_commit():
 
 
 @pytest.mark.asyncio
-async def test_context_survives_several_commits():
+async def test_context_survives_several_commits(sessions):
     """Repeated, because one commit may coincidentally reuse the same connection."""
-    from src.api.deps import SessionLocal, set_database_context
+    from src.api.deps import set_database_context
 
-    await _strip_pooled_connections()
+    await _strip_pooled_connections(sessions)
 
-    async with SessionLocal() as session:
+    async with sessions() as session:
         await set_database_context(session, DOMAIN, False, USER_ID)
         for attempt in range(5):
             await session.commit()
@@ -103,35 +123,34 @@ async def test_context_survives_several_commits():
 
 
 @pytest.mark.asyncio
-async def test_context_does_not_leak_to_a_session_that_never_set_one():
+async def test_context_does_not_leak_to_a_session_that_never_set_one(sessions):
     """The property get_db's RESET block used to provide, now structural.
 
     A session with no context must see none — not the previous request's. Transaction
     local settings cannot outlive their transaction, so this holds without any cleanup
     step that has to be remembered.
     """
-    from src.api.deps import SessionLocal, set_database_context
+    from src.api.deps import set_database_context
 
-    async with SessionLocal() as session:
+    async with sessions() as session:
         await set_database_context(session, DOMAIN, False, USER_ID)
         await session.commit()
 
-    async with SessionLocal() as session:
+    async with sessions() as session:
         observed = list((await session.execute(READ_CONTEXT)).first())
         assert observed == ["", ""], f"leaked tenant context into a fresh session: {observed}"
 
 
 @pytest.mark.asyncio
-async def test_a_session_without_context_is_not_given_one():
+async def test_a_session_without_context_is_not_given_one(sessions):
     """Workers, the migrator and startup open sessions with no tenant deliberately.
 
     They must keep failing closed under RLS rather than inheriting a context, so the
     listener has to skip them rather than apply some default.
     """
-    from src.api.deps import SessionLocal
+    
+    await _strip_pooled_connections(sessions)
 
-    await _strip_pooled_connections()
-
-    async with SessionLocal() as session:
+    async with sessions() as session:
         observed = list((await session.execute(READ_CONTEXT)).first())
         assert observed == ["", ""]
