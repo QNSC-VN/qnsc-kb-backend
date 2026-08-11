@@ -121,8 +121,11 @@ module "stack" {
   // and a broken response mid-answer. The worker takes Spot deliberately — Celery
   // redelivers an interrupted task, so an interruption costs time rather than work.
   api = {
+    // 4096: the embedding model is local and the API loads it to embed the search query.
+    // BAAI/bge-m3 is ~2.27 GB of fp32 weights plus torch; at 1024 MB the load fails and
+    // search silently degrades to keyword-only. 512 CPU caps a task at 4096 MB.
     cpu                = 512
-    memory             = 1024
+    memory             = 4096
     min_count          = 0
     max_count          = 6
     enable_autoscaling = false
@@ -135,8 +138,10 @@ module "stack" {
   // every scheduled job. Splitting beat into its own service is the prerequisite for
   // scaling the worker horizontally, and the stack module's validation enforces it.
   worker = {
+    // The worker loads the same model to embed chunks, alongside clamav (1024), beat
+    // (256) and PaddleOCR per scanned file.
     cpu                = 1024
-    memory             = 4096
+    memory             = 6144
     min_count          = 0
     max_count          = 1
     enable_autoscaling = false
@@ -201,8 +206,8 @@ module "stack" {
   // Must match develop. A different model writes vectors of a different width, and even
   // at the same width the spaces are unrelated — the comparison would not error, it would
   // just return nonsense. Fixed at migration time by the pgvector column and HNSW index.
-  embedding_model   = "gemini-embedding-001"
-  embedding_version = "gemini-embedding-001-768-v1"
+  embedding_model   = "BAAI/bge-m3"
+  embedding_version = "bge-m3-v1"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id
