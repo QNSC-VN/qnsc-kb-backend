@@ -165,6 +165,17 @@ locals {
     { name = "MICROSOFT_CLIENT_ID", value = var.microsoft_client_id },
     { name = "MICROSOFT_TENANT_ID", value = var.microsoft_tenant_id },
     { name = "MICROSOFT_REDIRECT_URI", value = var.microsoft_client_id != "" ? "${local.api_base_url}/api/v1/connectors/oauth/callback" : "" },
+
+    // SSO sign-in, a DIFFERENT callback from the connector one above: that consents to
+    // SharePoint content, this authenticates a person. Both must be registered on the
+    // Entra app.
+    //
+    // Set unconditionally, because validate_production() requires it with `if not all`
+    // rather than only when SSO is switched on. Missing it took the develop API down —
+    // "Microsoft Entra client, tenant, and redirect settings are required in production"
+    // raised in the FastAPI lifespan, so uvicorn exited 3 before writing a request log
+    // and the service crash-looped with an empty log stream.
+    { name = "MICROSOFT_LOGIN_REDIRECT_URI", value = "${local.api_base_url}/api/v1/auth/entra/callback" },
     { name = "GOOGLE_CLIENT_ID", value = var.google_client_id },
     { name = "GOOGLE_REDIRECT_URI", value = var.google_client_id != "" ? "${local.api_base_url}/api/v1/connectors/oauth/callback" : "" },
     { name = "ALLOWED_EMAIL_DOMAINS", value = join(",", var.allowed_email_domains) },
