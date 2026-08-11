@@ -1145,12 +1145,20 @@ async def entra_callback(
         allowed_domain = settings.ENTRA_AUTO_PROVISION_DOMAIN.strip().lower()
         if domain != allowed_domain:
             raise HTTPException(status_code=403, detail="Your Microsoft account is not eligible for automatic KB provisioning")
+        # bootstrap_rbac below reads this column: "Admin" attaches the GLOBAL admin role
+        # (company_domain NULL), anything else the company-scoped equivalent. It assigns
+        # only to a user with no roles yet, so this can never re-promote an existing one.
+        admin_emails = {
+            address.strip().lower()
+            for address in settings.ENTRA_ADMIN_EMAILS.split(",")
+            if address.strip()
+        }
         user = User(
             email=email,
             name=str(claims.get("name") or email.rsplit("@", 1)[0]).strip()[:255],
             password_hash=get_password_hash(secrets.token_urlsafe(32)),
             company_domain=domain,
-            role="Staff",
+            role="Admin" if email in admin_emails else "Staff",
             active=True,
         )
         db.add(user)

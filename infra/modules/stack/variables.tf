@@ -383,3 +383,19 @@ variable "alarm_thresholds" {
     alarm is the only thing that makes it visible before it is paid for.
   EOT
 }
+
+variable "entra_auto_provision_domain" {
+  type        = string
+  default     = "qnsc.vn"
+  description = "Email domain auto-provisioned on Entra sign-in, at the Staff role. Stated explicitly so develop's access rules do not depend on a code default."
+}
+
+variable "entra_admin_emails" {
+  type        = list(string)
+  default     = []
+  description = <<-EOT
+    Addresses provisioned as GLOBAL administrators on first Entra sign-in, instead of
+    Staff. Read only when the account is first created, so it never overrides a role set
+    later in the admin UI, and removing an address here does not demote anyone.
+  EOT
+}

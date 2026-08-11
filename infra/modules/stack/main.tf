@@ -183,9 +183,25 @@ locals {
     // raised in the FastAPI lifespan, so uvicorn exited 3 before writing a request log
     // and the service crash-looped with an empty log stream.
     { name = "MICROSOFT_LOGIN_REDIRECT_URI", value = "${local.api_base_url}/api/v1/auth/entra/callback" },
+
+    // Who may sign in, and who arrives as an administrator. Both stated here rather than
+    // inherited from a code default: today develop's access rules happen to be correct
+    // only because config.py defaults to "qnsc.vn", so a change to that default would
+    // silently change who can get an account.
+    //
+    // Anyone in the pinned tenant with a matching domain is auto-provisioned at the
+    // least-privileged Staff role; the addresses below arrive as global administrators
+    // instead. That list is read only when an account is FIRST created, so it never
+    // overrides a role set later in the admin UI.
+    { name = "ENTRA_AUTO_PROVISION_DOMAIN", value = var.entra_auto_provision_domain },
+    { name = "ENTRA_ADMIN_EMAILS", value = join(",", var.entra_admin_emails) },
+
+    // Restricts admin-created accounts too. Empty accepts ANY domain, and under
+    // company-scoped RLS a non-qnsc.vn address quietly creates a second tenant whose rows
+    // nobody else can see.
+    { name = "ALLOWED_EMAIL_DOMAINS", value = join(",", var.allowed_email_domains) },
     { name = "GOOGLE_CLIENT_ID", value = var.google_client_id },
     { name = "GOOGLE_REDIRECT_URI", value = var.google_client_id != "" ? "${local.api_base_url}/api/v1/connectors/oauth/callback" : "" },
-    { name = "ALLOWED_EMAIL_DOMAINS", value = join(",", var.allowed_email_domains) },
   ])
 
   // Injected secrets shared by api and worker. Both encrypt and decrypt stored

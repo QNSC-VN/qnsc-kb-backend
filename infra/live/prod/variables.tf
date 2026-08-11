@@ -62,8 +62,25 @@ variable "google_client_id" {
 
 variable "allowed_email_domains" {
   type        = list(string)
-  default     = []
-  description = "Restricts which email domains may be registered. Empty accepts any — narrow this before go-live."
+  default     = ["qnsc.vn"]
+  description = <<-EOT
+    Restricts which email domains may be registered. Empty accepts ANY, which under
+    company-scoped RLS means an admin-created account on another domain quietly becomes a
+    second tenant whose rows nobody else can see.
+  EOT
+}
+
+variable "entra_admin_emails" {
+  type    = list(string)
+  default = ["nghiavt@qnsc.vn", "sinhhpt@qnsc.vn"]
+
+  description = <<-EOT
+    Provisioned as GLOBAL administrators on their FIRST Entra sign-in, rather than Staff.
+
+    Read only at account creation, so it never overrides a role changed later in the admin
+    UI, and removing an address does not demote anyone — promote and demote in the UI once
+    an account exists.
+  EOT
 }
 
 variable "alarm_emails" {

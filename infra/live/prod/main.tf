@@ -214,4 +214,5 @@ module "stack" {
   microsoft_client_id   = var.microsoft_client_id
   google_client_id      = var.google_client_id
   allowed_email_domains = var.allowed_email_domains
+  entra_admin_emails    = var.entra_admin_emails
 }

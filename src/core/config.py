@@ -174,6 +174,15 @@ class Settings(BaseSettings):
     # Only verified QNSC Entra identities are provisioned automatically. New
     # identities receive the least-privileged built-in Staff role.
     ENTRA_AUTO_PROVISION_DOMAIN: str = "qnsc.vn"
+    # Addresses that are provisioned as global administrators instead of Staff, comma
+    # separated. Consulted ONLY when the account is first created — it is a bootstrap
+    # default, not a standing authority, so a role changed later in the admin UI is never
+    # overwritten by a sign-in. Removing someone here does not demote them.
+    #
+    # Safe to express as email addresses because the tenant is pinned: an id_token only
+    # reaches this check if Entra issued it for MICROSOFT_TENANT_ID, so the addresses are
+    # ones the organisation controls.
+    ENTRA_ADMIN_EMAILS: str = ""
     GOOGLE_CLIENT_ID: str | None = None
     GOOGLE_CLIENT_SECRET: str | None = None
     GOOGLE_REDIRECT_URI: str | None = None
