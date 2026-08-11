@@ -1,7 +1,7 @@
 from typing import AsyncGenerator
 from fastapi import Cookie, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import jwt, JWTError
+import jwt
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from src.core.config import settings
@@ -106,7 +106,7 @@ async def get_current_user(
         email = payload.get("sub")
         if not isinstance(email, str):
             raise credentials_exception
-    except JWTError:
+    except jwt.PyJWTError:
         raise credentials_exception
         
     email = email.strip().lower()

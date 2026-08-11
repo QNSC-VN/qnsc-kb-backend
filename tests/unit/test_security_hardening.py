@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi import Response
 from starlette.requests import Request
-from jose import jwt
+import jwt
 
 from src.core.config import Settings
 from src.core.security import create_access_token
@@ -355,7 +355,7 @@ def test_global_article_review_enables_article_routing_without_identity_access()
 
 def test_access_token_carries_auth_version():
     token = create_access_token("user@acme.test", auth_version=4)
-    assert jwt.get_unverified_claims(token)["av"] == 4
+    assert jwt.decode(token, options={"verify_signature": False})["av"] == 4
 
 
 def test_embedding_failure_is_not_converted_to_zero_vector(monkeypatch):
