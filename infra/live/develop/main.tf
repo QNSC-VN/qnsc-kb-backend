@@ -70,9 +70,14 @@ module "stack" {
   tunnel_enabled = true
 
   // ── Sizing ─────────────────────────────────────────────────────────────────
-  // 512 / 1024 since embeddings moved to a hosted API. This task previously needed
-  // 2048 MB purely to hold a local embedding model it loaded to embed the search query;
-  // it now holds a FastAPI process and its database and cache pools.
+  // 4096 MB because the embedding model is LOCAL again and the API loads it at startup
+  // to embed the search query. BAAI/bge-m3 is XLM-R-large: 568M parameters, ~2.27 GB of
+  // fp32 weights, and torch on top. At the previous 1024 MB the load failed and the API
+  // fell back to keyword-only search — which returns results, so nothing looked broken.
+  //
+  // 512 CPU caps a Fargate task at 4096 MB, so this is the ceiling at this vCPU size. If
+  // the model needs more, raise CPU first. PR #23 (ONNX runtime) is what brings this
+  // number back down: same model, no torch, roughly half the resident set.
   //
   // Spot with a floor of ZERO, and autoscaling off. Develop is exercised by CI deploys
   // and occasional manual checks, so paying for a task around the clock buys nothing.
@@ -85,7 +90,7 @@ module "stack" {
   // and a floor of 1 instead would undo the scale-to-zero within minutes.
   api = {
     cpu                = 512
-    memory             = 1024
+    memory             = 4096
     min_count          = 0
     max_count          = 2
     enable_autoscaling = false
@@ -95,16 +100,16 @@ module "stack" {
   // Three containers share this task, and container limits are carved OUT of the total:
   // clamav 1024 (its signature database), beat 256, leaving ~768 for the Celery worker.
   //
-  // 4096 -> 2048 with embeddings hosted: the worker no longer loads a model, and PaddleOCR
-  // is invoked per scanned file rather than held resident. If OCR of large scans starts
-  // failing, this is the number to raise — and raise it on evidence from a killed task,
-  // not pre-emptively.
+  // Back to 6144 with embeddings local: the worker loads the same ~2.27 GB bge-m3 model to
+  // embed chunks, on top of clamav's 1024 and beat's 256, and PaddleOCR is invoked per
+  // scanned file. 1024 CPU because 512 caps a task at 4096 MB, which no longer fits.
+  // If OCR of large scans starts failing, raise this on evidence from a killed task.
   //
   // max_count is 1 and cannot be raised while beat lives here — two beat containers
   // double every scheduled job. The stack module enforces that with a validation.
   worker = {
-    cpu                = 512
-    memory             = 2048
+    cpu                = 1024
+    memory             = 6144
     min_count          = 0
     max_count          = 1
     enable_autoscaling = false
@@ -176,8 +181,8 @@ module "stack" {
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
   // re-embedding every chunk, because a query and a chunk embedded by different models
   // are points in unrelated spaces.
-  embedding_model   = "gemini-embedding-001"
-  embedding_version = "gemini-embedding-001-768-v1"
+  embedding_model   = "BAAI/bge-m3"
+  embedding_version = "bge-m3-v1"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id
