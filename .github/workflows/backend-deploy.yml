@@ -163,7 +163,7 @@ jobs:
 
   deploy:
     needs: [wait-for-infra, wait-for-ci]
-    uses: QNSC-VN/qnsc-ci/.github/workflows/backend-deploy.yml@v1.7.1
+    uses: QNSC-VN/qnsc-ci/.github/workflows/backend-deploy.yml@v1.7.2
     with:
       product: qnsc-kb
       has_worker: true
