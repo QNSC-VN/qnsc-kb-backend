@@ -44,3 +44,24 @@ updates:
     labels: ["dependencies", "docker"]
     commit-message:
       prefix: "deps(docker)"
+
+  # Shared Terraform modules from qnsc-tf-modules, pinned by git tag as
+  # `?ref=<module>-vX.Y.Z`. WITHOUT THIS ECOSYSTEM every module bump is manual, and that
+  # is exactly how the drift happened: ecs-cluster sat at v1.0.0 in both products while
+  # v2.0.0 was released, and qnsc-infra-template — the repo new products are created from
+  # — rotted to ecr v1.1.0, ecs-service v1.3.0 and secrets v1.1.0.
+  #
+  # `directories` with a GLOB, not a fixed list. A new environment directory is picked up
+  # without editing this file — a hand-maintained list of places to look is the same
+  # defect the pin-drift report had when it named its consumer repos by hand.
+  #
+  # chore(deps), not infra(deps): the PR-title check only accepts the conventional-commit
+  # types, and a rejected title blocks the very PR this exists to open.
+  - package-ecosystem: "terraform"
+    directories: ["/infra/live/*", "/infra/modules/*"]
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "chore(deps)"
