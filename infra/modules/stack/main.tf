@@ -420,7 +420,21 @@ module "api" {
   // migrator reuses this role and injects the master credential from it; omit it and
   // that task cannot start at all ("unable to pull secrets") — a boot failure, not a
   // runtime error.
-  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn], aws_secretsmanager_secret.tunnel_token[*].arn)
+  // The tunnel token comes from `module.tunnel_api.secret_arns`, NOT from the secret
+  // resource directly. Same list either way today, and the reason to prefer the output is
+  // that it is the sidecar's own declaration of what this role must read — its description
+  // says "Concat into ecs-service's secret_arns, or the task fails to start with
+  // ResourceInitializationError."
+  //
+  // It also strips a `:<key>::` valueFrom suffix, so it stays correct if the token ever
+  // moves into the bundle. The raw ARN form would then match nothing in IAM while still
+  // applying cleanly — a boot failure surfacing long after a green apply.
+  //
+  // rally had this line without the tunnel ARN at all and every develop deploy failed for
+  // two days: the api task could not start, the circuit breaker rolled back, and the
+  // service stayed healthy on a stale image. Naming the secret here worked only because
+  // someone remembered to; reading it from the module removes the chance to forget.
+  secret_arns = concat(local.secret_iam_arns, [module.rds.master_secret_arn], module.tunnel_api.secret_arns)
   kms_key_arn = local.kms_key_arn
 
   additional_containers = module.tunnel_api.container_definitions
