@@ -189,13 +189,21 @@ module "stack" {
     enabled = false
   }
 
-  // Weekly, not nightly. The environment is already at zero tasks with a stopped
-  // database, so this is a backstop rather than the main saving: it catches an
-  // environment left running by a manual check or a deploy that woke the database.
+  // DAILY, not weekly, and the difference is most of the cost of an idle environment.
   //
-  // REMOVE THIS AT GO-LIVE. A schedule that stops production every Sunday is exactly
-  // the kind of thing that survives a launch by accident.
-  idle_schedule = "cron(0 1 ? * SUN *)"
+  // This was `cron(0 1 ? * SUN *)` on the reasoning that the environment is already at
+  // zero tasks with a stopped database, so a weekly pass is a backstop rather than the
+  // main saving. That holds for the ECS half. It does not hold for RDS, because the thing
+  // it is a backstop AGAINST is AWS force-starting a stopped instance after 7 days — and
+  // a force-start landing on a Monday then runs until the following Sunday.
+  //
+  // Measured on rally-prod, which had the identical setting: 59 of 168 hours in a week
+  // published CloudWatch datapoints. A "stopped" pre-launch database was running 35% of
+  // the time, roughly $4/mo. Daily bounds that exposure at one day instead of seven.
+  //
+  // REMOVE THIS AT GO-LIVE. A schedule that stops production every night is exactly the
+  // kind of thing that survives a launch by accident — more so now that it fires daily.
+  idle_schedule = "cron(0 1 * * ? *)"
 
   // No wake_schedule, deliberately: nothing here should start on a timer. Before
   // go-live there is nothing to wake for; after go-live the floors keep it up
