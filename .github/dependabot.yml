@@ -65,3 +65,26 @@ updates:
     labels: ["dependencies"]
     commit-message:
       prefix: "chore(deps)"
+    # PROVIDERS IGNORED, MODULES UPDATED — and the first half is not optional.
+    #
+    # Dependabot's terraform updater treats providers and modules as one dependency set.
+    # Across several directories it tried to rewrite a `required_providers` block in a
+    # file that has none and threw, failing the whole job:
+    #
+    #   ERROR Error processing hashicorp/aws (RuntimeError)
+    #   ERROR Content didn't change!
+    #         terraform/lib/dependabot/terraform/file_updater.rb:34
+    #
+    # So no module updates were produced either — the run failed before opening anything.
+    #
+    # Ignoring providers is also the right POLICY, not merely a workaround. The `~>`
+    # constraints on aws and cloudflare are deliberate, and an automatic major bump of the
+    # AWS provider against live state is not something to receive on a Monday morning.
+    #
+    # `ignore` rather than an `allow` allowlist for the modules: if a new provider is added
+    # later, this fails loudly again and gets a decision. An allowlist whose pattern stopped
+    # matching would produce NO updates and no error, which is the silent failure this whole
+    # effort exists to remove.
+    ignore:
+      - dependency-name: "hashicorp/*"
+      - dependency-name: "cloudflare/*"
