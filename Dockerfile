@@ -119,10 +119,58 @@ ARG BAKE_EMBEDDING_MODEL=true
 ARG EMBEDDING_MODEL=BAAI/bge-m3
 ENV HF_HOME=/opt/huggingface
 
+# THE BAKE MUST BE BYTE-REPRODUCIBLE, and the four cleanup lines below are what make it so.
+#
+# Rule 1 keeps this layer off the per-commit path, but it is still rebuilt whenever the
+# build cache misses — and it misses constantly, because `type=gha` caps at 10 GB per
+# repository while this layer alone is 2.5 GB in each of the `api` and `worker` scopes.
+# A rebuilt layer whose bytes differ by even one mtime gets a NEW digest, and ECR bills
+# that as another full copy. Measured on qnsc-kb-api: nine distinct 2.53 GB layers, every
+# one `shared_by=1` — 22.7 GB of the repository's 24.0 GB was the same weights over again.
+#
+# Reproducible, the digest is identical on every rebuild, so ECR stores ONE copy no matter
+# how often the cache misses. That is a storage fix, not a build-time fix; caching is what
+# saves the download, and it is configured in qnsc-ci's build-push-ecr action.
+#
+# Each line removes a specific source of variance, all four confirmed by diffing the layer
+# tarballs of two `--no-cache` builds. Removing any one of them makes the digest drift again:
+#
+#   python -B      the interpreter byte-compiles stdlib modules it imports, and the .pyc
+#                  files land in /usr/local/**/__pycache__ — OUTSIDE $HF_HOME, so the
+#                  normalisation below cannot reach them. Identical content, new mtimes.
+#   rm xet         the Xet transfer client writes $HF_HOME/xet/logs/xet_<timestamp>.log.
+#                  The filename itself carries the clock. Nothing reads it after the
+#                  download, and the chunk cache it sits beside only speeds a re-download
+#                  that will never happen in an image.
+#   touch          content is content-addressed and therefore already identical; mtimes
+#                  are not. -h so symlink timestamps are set rather than their targets',
+#                  and $HF_HOME's PARENT too — creating a directory bumps its parent's
+#                  mtime, and /opt alone kept the digest moving after everything else was
+#                  fixed.
+#   XDG/TORCH_*   scoped to this command, not ENV: they pull stray library caches under
+#                  $HF_HOME so they are normalised with everything else instead of
+#                  becoming the next source of drift. TORCHINDUCTOR_CACHE_DIR earns its
+#                  place — importing torch creates /tmp/torchinductor_root, and with the
+#                  small MiniLM model used to develop this recipe it never appeared. Only
+#                  a full bge-m3 build showed it, as the last two differing entries.
+#   /tmp           emptied and pinned anyway: redirecting the caches we know about is not
+#                  a guarantee about the ones we do not, and /tmp is the conventional
+#                  place for them. Nothing written there during a build is needed at run
+#                  time, so clearing it costs nothing and removes the whole category.
+#
+# Verify after changing anything here — build the target twice with --no-cache and compare
+# `docker buildx build --output type=oci`; the manifest's last layer digest must match.
 RUN mkdir -p "$HF_HOME" && \
     if [ "$BAKE_EMBEDDING_MODEL" = "true" ]; then \
-        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"; \
+        XDG_CACHE_HOME="$HF_HOME/.xdg" TORCH_HOME="$HF_HOME/torch" \
+        TORCHINDUCTOR_CACHE_DIR="$HF_HOME/.inductor" \
+        python -B -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"; \
     fi && \
+    rm -rf "$HF_HOME/xet" "$HF_HOME/.inductor" && \
+    find "$HF_HOME" -type d -name '.locks' -prune -exec rm -rf {} + && \
+    find "$HF_HOME" -depth -exec touch -h -d @0 {} + && \
+    touch -h -d @0 "$(dirname "$HF_HOME")" && \
+    rm -rf /tmp/* /tmp/.[!.]* && touch -d @0 /tmp && \
     chown -R appuser:appuser "$HF_HOME"
 
 # ---------------------------------------------------------------------------
