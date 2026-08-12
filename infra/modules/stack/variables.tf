@@ -310,7 +310,19 @@ variable "log_retention_days" {
 variable "container_insights" {
   type        = string
   default     = "disabled"
-  description = "Stated, never inherited: the ecs-cluster module defaults to \"enhanced\", whose per-task metrics bill as custom CloudWatch metrics."
+  description = <<-EOT
+    Stated, never inherited.
+
+    "enhanced" adds per-task and per-container metrics that CloudWatch bills as CUSTOM
+    metrics at $0.07 each — four clusters silently on that default produced 606
+    metric-months (~$42) on the July 2026 bill, and the count grows with task churn
+    rather than with traffic.
+
+    ecs-cluster used to DEFAULT to "enhanced", which is how those clusters got there;
+    v2.0.0 changed the default to "enabled" (cluster- and service-level metrics, in the
+    free AWS/ECS namespace). So inheriting is no longer expensive — but it is still not
+    queried by anything here, which is why this stays "disabled" and stays stated.
+  EOT
 }
 
 // ── Cost schedules ───────────────────────────────────────────────────────────
