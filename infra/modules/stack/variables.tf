@@ -332,6 +332,38 @@ variable "idle_schedule" {
     Two passes are the fix (e.g. "cron(0 0,3 * * ? *)"): the first ends the working day,
     the second catches an environment woken by a late deploy.
   EOT
+
+  // MUST FIRE AT LEAST DAILY, and this is the second half of the same lesson.
+  //
+  // The paragraph above explains why one pass a NIGHT is not enough. A pass a WEEK is
+  // worse in a way that is easy to miss, because RDS run-state is not a Terraform concept:
+  // the instance is stopped out of band, and AWS FORCE-STARTS a stopped instance after 7
+  // days. A weekly re-stop therefore bounds that exposure at seven days rather than one —
+  // a force-start landing on a Monday runs until the following Sunday.
+  //
+  // Both products shipped "cron(0 1 ? * SUN *)" in production on the reasoning that an
+  // environment already at zero tasks with a stopped database only needs a backstop. That
+  // holds for the ECS half and fails for RDS. Measured on rally-prod before the fix: 59 of
+  // 168 hours in a week published CloudWatch datapoints — a pre-launch database with no
+  // users, no tasks and no cache running 35% of the time.
+  //
+  // Checked rather than replaced by a named-posture enum deliberately: three call sites in
+  // two repos do not justify inventing a vocabulary, and the constraint is a property of
+  // the VALUE, so it belongs on the value.
+  //
+  // Fields are minute hour day-of-month month day-of-week year. Restricting either day
+  // field means the schedule skips days; `*` and `?` are the only spellings that do not.
+  validation {
+    condition = var.idle_schedule == null || can(
+      regex("^cron\\([^ ]+ [^ ]+ [*?] [*?] [*?] [^ )]+\\)$", var.idle_schedule)
+    )
+    error_message = <<-EOT
+      idle_schedule must fire at least daily: day-of-month, month and day-of-week must all
+      be "*" or "?". AWS force-starts a stopped RDS instance after 7 days, so a weekly
+      schedule leaves it running for up to six of them — rally-prod measured 35% uptime
+      under "cron(0 1 ? * SUN *)". Use "cron(0 1 * * ? *)" for a daily pass.
+    EOT
+  }
 }
 
 variable "wake_schedule" {
