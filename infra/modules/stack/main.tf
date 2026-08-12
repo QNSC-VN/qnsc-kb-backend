@@ -292,7 +292,7 @@ module "cache" {
 
 // ── ECS cluster ───────────────────────────────────────────────────────────────
 module "ecs_cluster" {
-  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecs-cluster?ref=ecs-cluster-v1.0.0"
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/ecs-cluster?ref=ecs-cluster-v2.0.0"
 
   name               = local.name
   container_insights = var.container_insights
