@@ -38,9 +38,9 @@ openpyxl = "^3.1.5"
 python-pptx = "^1.0.2"
 pillow = "^12.0.0"
 pymupdf = "^1.25.3"
-# The 0.0.2 pin existed only for the numpy 1.x ceiling above; current releases
-# ride numpy 2.
-markitdown = "^0.1.7"
+# 0.0.2 is the last MarkItDown release compatible with this project's
+# NumPy 1.x constraint (required by the local Paddle OCR stack).
+markitdown = "0.0.2"
 
 # Scanned-document OCR. NOT installed by default: only the WORKER extracts text from
 # scanned files, and paddle is ~1 GB. src/domain/source_extraction.py imports it lazily,
@@ -55,35 +55,21 @@ optional = true
 paddlepaddle = "^3.0.0"
 paddleocr = "^3.0.0"
 
-# Local embedding models. Optional to poetry, but REQUIRED in practice: the default
-# EMBEDDING_MODEL (BAAI/bge-m3) is loaded in-process, by the worker to embed chunks and by
-# the API to embed the search query. Both the api and worker image targets install it, and
-# a local checkout needs it too:
+# Local ONNX embedding models. Optional to poetry, but REQUIRED in practice: the default
+# EMBEDDING_MODEL (BAAI/bge-m3) is loaded in-process by ONNX Runtime, by the worker to
+# embed chunks and by the API to embed the search query. Both the api and worker image
+# targets install it, and a local checkout needs it too:
 #
 #   poetry install --with ml
 #
 # It stays a group rather than a main dependency so the migrator image — which touches
-# neither embeddings nor OCR — is not made to carry torch.
+# neither embeddings nor OCR — is not made to carry ONNX Runtime and model assets.
 [tool.poetry.group.ml]
 optional = true
 
 [tool.poetry.group.ml.dependencies]
-sentence-transformers = "^5.7.0"
-torch = { version = "^2.13.0", source = "pytorch-cpu" }
-# Pinned explicitly even though sentence-transformers pulls it in: that package still
-# accepts transformers 4.x, which carries remote-code-execution advisories (GHSA-29pf,
-# GHSA-fgcw, both HIGH). 5.5.0 is the first release clear of them.
-transformers = "^5.15.0"
-
-# ONNX Runtime: the same embedding model without torch or transformers. Roughly 2 GB
-# smaller in every image that embeds, and faster on CPU. Optional because the torch
-# group is still the reference implementation — see EMBEDDING_RUNTIME.
-[tool.poetry.group.onnx]
-optional = true
-
-[tool.poetry.group.onnx.dependencies]
-onnxruntime = "^1.24.0"
-tokenizers = "^0.22.0"
+onnxruntime = "1.20.1"
+transformers = "4.48.3"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^9.1.0"
@@ -94,8 +80,3 @@ mypy = "^1.10.0"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[[tool.poetry.source]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
