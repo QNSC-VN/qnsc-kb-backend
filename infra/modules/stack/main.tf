@@ -331,7 +331,7 @@ module "ecs_cluster" {
 // of this stack must be able to apply before Cloudflare is wired up.
 module "tunnel" {
   count  = var.tunnel_enabled && var.cloudflare_account_id != "" ? 1 : 0
-  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.1.1"
+  source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cf-tunnel?ref=cf-tunnel-v0.2.1"
 
   account_id = var.cloudflare_account_id
   // One tunnel per product per environment. Sharing one across environments would let a
