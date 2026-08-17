@@ -102,3 +102,78 @@ Expect two or three build iterations; each is roughly 25 minutes.
   replaced at any moment, and today that costs a 3-minute image pull plus a 13-second model load
   before the first query is answered
 - the api task stops being sized by a model it uses for one short string per search
+
+---
+
+# Unrelated to ONNX: `connectors.sync_interval_minutes` does not exist
+
+Filed here because it lands on the same person and in the same pass, **not** because it is part of
+the migration above. It is a bug rather than an optimisation, and it is independent of every
+numbered item in "The ask" — do it in either order.
+
+## The symptom
+
+A Celery task fails every ten minutes in `develop`. Measured in
+`/ecs/qnsc-kb-develop-worker`, 8 occurrences in two hours on 2026-08-17:
+
+```
+[error] Celery task failed
+  error=(sqlalchemy.dialects.postgresql.asyncpg.ProgrammingError)
+  <class 'asyncpg.exceptions.UndefinedColumnError'>:
+  column connectors.sync_interval_minutes does not exist
+```
+
+`/health/ready` still returns `200` with `database: ok` — the connection is fine, so nothing about
+the health check or the deploy reports this. It is only visible in the worker log.
+
+## The cause
+
+`src/models/ops.py:19` declares a column that no migration creates:
+
+```python
+sync_interval_minutes: Mapped[int] = mapped_column(
+    Integer, nullable=False, default=60, server_default="60"
+)
+```
+
+There is no `sync_interval` anywhere in `migrations/versions/` — checked against every revision up
+to `20260810_51_realign_embedding_dimension`. SQLAlchemy therefore puts the column in the `SELECT`
+list for any query loading `Connector`, and Postgres rejects the statement.
+
+## The fix is to DELETE it, not to add a migration
+
+`grep -rn sync_interval` over the whole repository returns **one** line: the declaration above.
+Nothing reads it, nothing writes it, and no API exposes it. The model's own comment already says so:
+
+> Retained for compatibility with pre-Alembic connector rows. Current scheduling uses connector
+> config and job mode; no API exposes this field.
+
+So a migration would add a column purely to satisfy a mapping nobody uses, and the drift would be
+resolved in the direction that costs a schema change and keeps dead state. Removing the attribute
+resolves it in the direction that deletes dead code.
+
+If it turns out something *does* depend on it, the migration is
+`op.add_column("connectors", sa.Column("sync_interval_minutes", sa.Integer(), nullable=False,
+server_default="60"))` — the `server_default` in the model means existing rows backfill without a
+data migration. But establish the consumer first.
+
+## Why it matters before production
+
+kb production does not exist yet, so this is currently a develop-only annoyance. It would not stay
+one: the same model runs everywhere, so the first production connector query fails the same way,
+and there it fails without a develop log anybody is already watching.
+
+## Verifying the fix
+
+Remove the attribute, deploy develop, and confirm the ten-minute failure stops:
+
+```bash
+aws logs filter-log-events --region ap-southeast-1 \
+  --log-group-name /ecs/qnsc-kb-develop-worker \
+  --start-time $(python3 -c 'import time;print(int(time.time()*1000)-1800000)') \
+  --filter-pattern 'sync_interval_minutes' --query 'length(events)'
+```
+
+Expect `0` across a window longer than the beat interval. **A quiet window shorter than that proves
+nothing** — the failure only appears when the scheduled task actually fires, and it went quiet for
+40 minutes on 2026-08-17 without being fixed, which is what made it easy to miss.
