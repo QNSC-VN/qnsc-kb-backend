@@ -71,7 +71,27 @@ locals {
   // With the cache disabled this is a deliberately UNRESOLVABLE RFC 2606 name rather
   // than an empty string: REDIS_URL has a localhost default in config.py, so omitting
   // it would leave a deployed task silently pointing Celery at itself.
-  redis_url = var.cache.enabled ? "rediss://${module.cache[0].endpoint}:${module.cache[0].port}" : "rediss://cache-disabled.invalid:6379"
+  # THREE cases; the middle one is the shared node in the runtime layer.
+  #
+  # The DATABASE INDEX is only appended when sharing — a dedicated node has nobody to
+  # collide with, and appending `/0` there would rewrite REDIS_URL for no behaviour change.
+  #
+  # `try()` is load-bearing, not defensive: a runtime layer without a shared cache has no
+  # `cache_endpoint` output, and a bare reference to a missing output fails the plan for
+  # EVERY environment rather than only the one sharing. Missing output while sharing lands
+  # on `.invalid`, which fails loudly at boot instead of pointing somewhere wrong.
+  shared_cache_endpoint = try(data.terraform_remote_state.runtime.outputs.cache_endpoint, null)
+  shared_cache_port     = try(data.terraform_remote_state.runtime.outputs.cache_port, 6379)
+
+  redis_url = (
+    !var.cache.enabled ? "rediss://cache-disabled.invalid:6379" :
+    var.cache.shared ? (
+      local.shared_cache_endpoint == null
+      ? "rediss://shared-cache-missing.invalid:6379"
+      : "rediss://${local.shared_cache_endpoint}:${local.shared_cache_port}/${var.cache.db_index}"
+    ) :
+    "rediss://${module.cache[0].endpoint}:${module.cache[0].port}"
+  )
 
   // Every app secret this stack owns. Terraform creates the CONTAINER; values are
   // pasted in out of band and never enter state. The deploy preflight in qnsc-ci
@@ -276,7 +296,10 @@ module "rds" {
 
 // ── Cache (Valkey) — Celery broker and result backend ────────────────────────
 module "cache" {
-  count  = var.cache.enabled ? 1 : 0
+  # NOT created when this product uses the shared node. Switching a live environment to
+  # `shared` destroys the dedicated node — that is where the saving is — and issues a
+  # different endpoint, so it is a task-definition revision and a rolling deploy.
+  count  = var.cache.enabled && !var.cache.shared ? 1 : 0
   source = "git::https://github.com/QNSC-VN/qnsc-tf-modules.git//modules/cache?ref=cache-v1.0.0"
 
   name              = "${local.name}-cache"

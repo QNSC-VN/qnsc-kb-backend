@@ -135,14 +135,41 @@ module "stack" {
     backup_retention_days = 0
   }
 
-  // A cache.t4g.micro node, not serverless: serverless has roughly a $90/mo floor.
-  // ElastiCache has no stopped state — only delete — so this is the one component of an
-  // idled environment that keeps billing, and it stays up because it is the Celery
-  // broker rather than a cache that can be missed.
+  // ── Shared develop cache ─────────────────────────────────────────────────────
+  // The ONE Valkey node in the runtime layer, not a node of qnsc-kb's own.
+  //
+  // ElastiCache has no stopped state — only delete — so this was the one component of an
+  // idled environment that kept billing all 730 hours of the month, while the schedule
+  // above now runs develop 55 hours a week. It could never be turned off either, because
+  // it is the Celery broker rather than a cache that can be missed. rally-develop had the
+  // same node for the same reason: two at $15.45 each.
+  //
+  // Saves $15.45/mo across the account. Node created in QNSC-VN/qnsc-infra#69, and rally
+  // moved onto it in QNSC-VN/rally#448.
+  //
+  // DATABASE 1. rally holds 0. This is a Valkey database index, not a key prefix — a
+  // prefix has to be honoured by every library touching the connection, while an index is
+  // enforced by the server. Cluster mode is disabled on the shared node, so all 16
+  // databases exist and SELECT works. Indexes are allocated centrally in the stack
+  // variable's description; two products silently sharing one is the collision that
+  // allocation prevents, and nothing catches it at plan time.
+  //
+  // CELERY IS WHY THE EVICTION POLICY MATTERS, and this is the product that carries the
+  // risk. Broker keys have no TTL, so evicting one loses a QUEUED TASK rather than missing
+  // a cache. The shared node runs the default `volatile-lru`, which evicts only keys that
+  // HAVE a TTL — rally's rate-limit counters and denylist entries go first, and Celery's
+  // queue is never a candidate. If anyone sets `allkeys-lru` on that node to improve
+  // rally's hit rate, this product silently starts dropping background work.
+  //
+  // APPLYING THIS DESTROYS qnsc-kb-develop-cache and issues a different endpoint, so it is
+  // a task-definition revision and a rolling deploy. In-flight Celery tasks on the old
+  // node are lost — acceptable in develop, where the outbox replays and the connectors
+  // re-poll. It would not be acceptable in production, which keeps its own node.
   cache = {
-    enabled   = true
-    mode      = "node"
-    node_type = "cache.t4g.micro"
+    enabled  = true
+    mode     = "node"
+    shared   = true
+    db_index = 1
   }
 
   // ClamAV runs here too, not only in production. It is not really optional: the
