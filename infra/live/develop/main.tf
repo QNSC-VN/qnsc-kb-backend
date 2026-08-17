@@ -161,13 +161,18 @@ module "stack" {
   // queue is never a candidate. If anyone sets `allkeys-lru` on that node to improve
   // rally's hit rate, this product silently starts dropping background work.
   //
-  // APPLYING THIS DESTROYS qnsc-kb-develop-cache and issues a different endpoint, so it is
-  // a task-definition revision and a rolling deploy. In-flight Celery tasks on the old
-  // node are lost — acceptable in develop, where the outbox replays and the connectors
-  // re-poll. It would not be acceptable in production, which keeps its own node.
+  // `mode` is deliberately NOT set here. It sizes a node this stack no longer creates —
+  // the shared node's mode is decided in qnsc-infra's runtime layer — so passing it would
+  // read as configuration and change nothing. Same for `node_type`.
+  //
+  // APPLIED 2026-08-17. qnsc-kb-develop-cache was destroyed and the endpoint changed, so
+  // the cutover was a task-definition revision plus a rolling deploy, and in-flight Celery
+  // tasks on the old node were lost — acceptable in develop, where the outbox replays and
+  // connectors re-poll. Verified afterwards: /health/ready returned
+  // {"database":"ok","redis":"ok","job_mode":"celery"} and beat resumed scheduling on the
+  // new node. Production, when it exists, keeps its own node.
   cache = {
     enabled  = true
-    mode     = "node"
     shared   = true
     db_index = 1
   }
