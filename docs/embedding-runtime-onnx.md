@@ -105,11 +105,14 @@ Expect two or three build iterations; each is roughly 25 minutes.
 
 ---
 
-# Unrelated to ONNX: `connectors.sync_interval_minutes` does not exist
+# ~~Unrelated to ONNX: `connectors.sync_interval_minutes` does not exist~~ — FIXED 2026-08-17
 
-Filed here because it lands on the same person and in the same pass, **not** because it is part of
-the migration above. It is a bug rather than an optimisation, and it is independent of every
-numbered item in "The ask" — do it in either order.
+**Resolved before handover; kept as the record.** The attribute was removed from
+`src/models/ops.py`, which is the direction the evidence pointed — see "The fix" below.
+Nothing in "The ask" changed, and no migration was added.
+
+Filed here originally because it landed on the same person and in the same pass, **not**
+because it is part of the migration above.
 
 ## The symptom
 
@@ -165,7 +168,7 @@ and there it fails without a develop log anybody is already watching.
 
 ## Verifying the fix
 
-Remove the attribute, deploy develop, and confirm the ten-minute failure stops:
+Done as described. Confirm the ten-minute failure has stopped:
 
 ```bash
 aws logs filter-log-events --region ap-southeast-1 \
