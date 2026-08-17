@@ -21,6 +21,6 @@ concurrency:
 
 jobs:
   release:
-    uses: QNSC-VN/qnsc-ci/.github/workflows/release-please.yml@v1.9.2
+    uses: QNSC-VN/qnsc-ci/.github/workflows/release-please.yml@v1.10.0
     secrets:
       RELEASE_BOT_PRIVATE_KEY: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
