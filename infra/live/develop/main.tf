@@ -165,7 +165,18 @@ module "stack" {
   // cloud-connector polling. In develop that is the intended trade. Beat resumes at the
   // wake, and the outbox is a queue rather than a stream, so pending rows are replayed
   // then rather than lost. Production must not take this setting for that reason.
-  idle_schedule = "cron(0 0,3 * * ? *)"
+  // THREE passes now, and 19:00 is the change: it ends the working day. 22:00 catches an
+  // evening deploy, 02:00 a late one. Was `0,3`.
+  //
+  // Develop was up 08:00-00:00, so five of those sixteen hours were after everyone had
+  // stopped. Measured across both develop environments (rally and qnsc-kb), that
+  // 19:00-00:00 tail is ~$8.13/mo of RDS and Fargate.
+  //
+  // THE LATE PASSES ARE NOT OPTIONAL. A deploy at 20:00 wakes develop; with nothing after
+  // 19:00 it would stay up until the NEXT working day's stop — 23 hours, worse than the
+  // schedule this replaces. Each pass is a no-op when develop is already down
+  // (InvalidDBInstanceState, deliberately not retried).
+  idle_schedule = "cron(0 2,19,22 * * ? *)"
 
   // 08:00 local, every day. Deploys already wake this environment, but that covers the
   // days it is CHANGED rather than the days it is USED — someone opening it on a
@@ -175,7 +186,24 @@ module "stack" {
   // 08:00 rather than 09:00 because the database needs those minutes and the API tasks
   // then have to pass a health check, so the environment is serving before the working
   // day rather than during its first minutes.
-  wake_schedule = "cron(0 8 * * ? *)"
+  // WEEKDAYS ONLY (was `* * ?`, daily), matching rally's develop stack.
+  //
+  // Weekend availability was bought when it was believed to cost ~$2.50/mo. Measured from
+  // Cost Explorer across both develop environments — unblended cost over usage quantity,
+  // 2026-08-01..16 — the weekend share of develop RDS and Fargate is ~$10.42/mo. Sound at
+  // $2.50, not at four times that against a $100/mo target for the account.
+  //
+  // Develop is DOWN Saturday and Sunday unless someone deploys, and that path is
+  // unchanged and automatic: the `wake` job in qnsc-ci's backend-deploy reusable starts
+  // RDS and both services before the deploy proceeds. Weekend work costs a few minutes
+  // waiting, not a manual step.
+  //
+  // CELERY NOTE, specific to this product: the beat schedule does not fire while develop
+  // is down, so a weekend now passes with no periodic tasks at all. That is the same trade
+  // the nightly stop already made (see idle_schedule above) — the outbox is a queue, so
+  // rows are replayed at the next wake rather than lost — just over two days instead of
+  // eight hours. Production does not idle and is unaffected.
+  wake_schedule = "cron(0 8 ? * MON-FRI *)"
 
   // Hosted. Fixes EMBEDDING_DIMENSION at 768, which is the pgvector column width and the
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
