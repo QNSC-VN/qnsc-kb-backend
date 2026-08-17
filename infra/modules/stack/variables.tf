@@ -169,6 +169,14 @@ variable "cache" {
     enabled   = optional(bool, true)
     mode      = optional(string, "node")
     node_type = optional(string, "cache.t4g.micro")
+
+    # Use the SHARED node in the runtime layer instead of creating one for this product.
+    # DEVELOP ONLY — see the description below. Created in QNSC-VN/qnsc-infra#69.
+    shared = optional(bool, false)
+
+    # Which Valkey database this product uses on the shared node. Ignored when
+    # `shared = false`. Allocated centrally: 0 = rally, 1 = qnsc-kb.
+    db_index = optional(number, 0)
   })
   default = {}
 
@@ -179,7 +187,39 @@ variable "cache" {
 
     "node" mode, not "serverless": serverless has roughly a $90/mo floor against
     ~$12/mo for a cache.t4g.micro node.
+
+    SHARING, in develop only. `shared = true` points this product at the ONE Valkey node
+    in the runtime layer (qnsc-infra live/runtime-dev, module.shared_cache) instead of
+    creating a node of its own. ElastiCache cannot be stopped — only deleted — so a
+    per-product dev node bills all 730 hours of the month however little the environment
+    runs, and develop now runs 55 hours a week. rally and qnsc-kb were paying $15.45 each
+    for two nodes.
+
+    `db_index` selects the Valkey database, NOT a key prefix: a prefix has to be honoured
+    by every library touching the connection, while an index is enforced by the server.
+    Cluster mode is disabled on the shared node, so all 16 databases exist and SELECT
+    works. Allocated centrally — 0 is rally, 1 is qnsc-kb.
+
+    THIS PRODUCT IS THE REASON THE EVICTION POLICY MATTERS. Celery's broker keys carry no
+    TTL, so evicting one loses a QUEUED TASK rather than missing a cache. The shared node
+    runs the default `volatile-lru`, which only evicts keys that have a TTL — rally's
+    rate-limit counters and denylist entries go first and Celery's queue is never a
+    candidate. Anyone setting `allkeys-lru` on that node to improve another product's hit
+    rate would silently start dropping this product's background work.
+
+    Production, when it exists, keeps its own node: a shared cache is a shared blast
+    radius.
   EOT
+
+  validation {
+    condition     = !var.cache.shared || var.cache.enabled
+    error_message = "cache.shared = true requires cache.enabled = true. `shared` selects WHERE the cache is, not WHETHER there is one — and with Celery on it, no cache means no background work at all."
+  }
+
+  validation {
+    condition     = var.cache.db_index >= 0 && var.cache.db_index <= 15
+    error_message = "cache.db_index must be 0-15: Valkey exposes 16 databases when cluster mode is disabled, which is what the shared node runs."
+  }
 }
 
 // ── Secrets ──────────────────────────────────────────────────────────────────
