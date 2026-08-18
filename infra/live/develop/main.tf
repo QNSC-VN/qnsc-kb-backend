@@ -70,14 +70,17 @@ module "stack" {
   tunnel_enabled = true
 
   // ── Sizing ─────────────────────────────────────────────────────────────────
-  // 4096 MB because the embedding model is LOCAL again and the API loads it at startup
-  // to embed the search query. BAAI/bge-m3 is XLM-R-large: 568M parameters, ~2.27 GB of
-  // fp32 weights, and torch on top. At the previous 1024 MB the load failed and the API
-  // fell back to keyword-only search — which returns results, so nothing looked broken.
+  // 2048 MB, sized from MEASUREMENT on EMBEDDING_RUNTIME=onnx (PR #51), not arithmetic:
+  // the task held a steady 1,569 MB (38.3% of the 4096 it was given) across the whole
+  // day it ran after the flip — the fp32 ONNX session resident, torch NOT loaded — and
+  // a search request adds ~460 ms of one short query through it. 2048 leaves ~30%
+  // headroom over that floor.
   //
-  // 512 CPU caps a Fargate task at 4096 MB, so this is the ceiling at this vCPU size. If
-  // the model needs more, raise CPU first. PR #23 (ONNX runtime) is what brings this
-  // number back down: same model, no torch, roughly half the resident set.
+  // The 4096 before this was the torch floor: the model plus the framework, sized when
+  // a 1024 task failed the load and silently fell back to keyword-only search. ONNX is
+  // what bought the headroom back — if this ever needs raising again, raise it on a
+  // CloudWatch MemoryUtilization graph, not on a hunch, and remember 512 CPU caps a
+  // task at 4096 MB.
   //
   // Spot with a floor of ZERO, and autoscaling off. Develop is exercised by CI deploys
   // and occasional manual checks, so paying for a task around the clock buys nothing.
@@ -90,26 +93,32 @@ module "stack" {
   // and a floor of 1 instead would undo the scale-to-zero within minutes.
   api = {
     cpu                = 512
-    memory             = 4096
+    memory             = 2048
     min_count          = 0
     max_count          = 2
     enable_autoscaling = false
     use_spot           = true
   }
 
-  // Three containers share this task, and container limits are carved OUT of the total:
-  // clamav 1024 (its signature database), beat 256, leaving ~768 for the Celery worker.
+  // Three containers share this task. Two carry hard container limits carved out of the
+  // task total — beat 256, and clamav 2048 (its signature database is ~2 GB resident;
+  // see the sizing post-mortem in the module) — so 2,304 MB is reserved against the
+  // task and the Celery worker itself runs unlimited, bounded only by the task level.
   //
-  // Back to 6144 with embeddings local: the worker loads the same ~2.27 GB bge-m3 model to
-  // embed chunks, on top of clamav's 1024 and beat's 256, and PaddleOCR is invoked per
-  // scanned file. 1024 CPU because 512 caps a task at 4096 MB, which no longer fits.
-  // If OCR of large scans starts failing, raise this on evidence from a killed task.
+  // 4096, down from 6144 on the same ONNX evidence. Measured idle on the new task:
+  // 1,278 MB total (clamav + beat + worker base, model not yet loaded). The embedding
+  // session loads lazily on the first chunk and adds ~1.5 GB (the api holds the
+  // identical session at 1,569 MB total), so ~2.8 GB steady while embedding, and
+  // PaddleOCR is invoked per scanned file on top of that. 4096 leaves ~1.2 GB for the
+  // OCR spike. 1024 CPU because 512 caps a task at 4096 MB — this is now the floor,
+  // not the ceiling, and the first large scanned-file ingest is the thing to watch: if
+  // it dies, raise this on the evidence of the killed task.
   //
   // max_count is 1 and cannot be raised while beat lives here — two beat containers
   // double every scheduled job. The stack module enforces that with a validation.
   worker = {
     cpu                = 1024
-    memory             = 6144
+    memory             = 4096
     min_count          = 0
     max_count          = 1
     enable_autoscaling = false
@@ -218,24 +227,38 @@ module "stack" {
   // 08:00 rather than 09:00 because the database needs those minutes and the API tasks
   // then have to pass a health check, so the environment is serving before the working
   // day rather than during its first minutes.
-  // WEEKDAYS ONLY (was `* * ?`, daily), matching rally's develop stack.
+  // NO `wake_schedule`, deliberately. qnsc-kb develop is ON DEMAND: nothing on a timer
+  // brings it up, and the idle passes above keep putting it back down.
   //
-  // Weekend availability was bought when it was believed to cost ~$2.50/mo. Measured from
-  // Cost Explorer across both develop environments — unblended cost over usage quantity,
-  // 2026-08-01..16 — the weekend share of develop RDS and Fargate is ~$10.42/mo. Sound at
-  // $2.50, not at four times that against a $100/mo target for the account.
+  // This is the same shape production runs — idle without wake — and the stack module's
+  // validation allows it explicitly ("idle without wake is fine — that is production
+  // today"). The reverse, wake without idle, is what it forbids.
   //
-  // Develop is DOWN Saturday and Sunday unless someone deploys, and that path is
-  // unchanged and automatic: the `wake` job in qnsc-ci's backend-deploy reusable starts
-  // RDS and both services before the deploy proceeds. Weekend work costs a few minutes
-  // waiting, not a manual step.
+  // WHAT WAKES IT: a deploy, automatically. The `wake` job in qnsc-ci's backend-deploy
+  // reusable runs `ensure-environment-awake` before the build lands — it starts the RDS
+  // instance and scales api and worker back up. So working on qnsc-kb costs a few minutes
+  // waiting on the first deploy of the day, not a manual step and not a support request.
+  // `aws rds start-db-instance` by hand works too if you want it warm before you push.
   //
-  // CELERY NOTE, specific to this product: the beat schedule does not fire while develop
-  // is down, so a weekend now passes with no periodic tasks at all. That is the same trade
-  // the nightly stop already made (see idle_schedule above) — the outbox is a queue, so
-  // rows are replayed at the next wake rather than lost — just over two days instead of
-  // eight hours. Production does not idle and is unaffected.
-  wake_schedule = "cron(0 8 ? * MON-FRI *)"
+  // WHY THIS AND NOT `tofu destroy`. Destroying the stack would save the last $3.96 as
+  // well, and it is the wrong trade: `secrets_recovery_window_days = 0` above means a
+  // destroy deletes all 12 secrets IMMEDIATELY with no recovery window, so every rebuild
+  // means re-pasting 12 values by hand and losing the dev database. On-demand is worth
+  // having; irrecoverable is not.
+  //
+  // WHAT IT SAVES, and what it does not. Only this product's own hours: RDS instance time
+  // (~$5.97/mo at a weekday schedule) and Fargate (~$5.80). The $2.76 of gp3 storage and
+  // $1.20 of secrets bill whether the instance runs or not, so ~$3.96/mo is the floor
+  // while the environment exists at all.
+  //
+  // It saves NOTHING on the shared dev platform, and that is worth stating so nobody
+  // expects it to: the shared Valkey node ($15.45) cannot be stopped — ElastiCache has no
+  // stopped state — and the shared NAT instance ($3.86) must stay up for rally develop,
+  // which still wakes every weekday. Those are properties of the runtime layer, not of
+  // this stack.
+  //
+  // RESTORE IT by putting the line back, if qnsc-kb returns to daily active development:
+  //   wake_schedule = "cron(0 8 ? * MON-FRI *)"
 
   // Hosted. Fixes EMBEDDING_DIMENSION at 768, which is the pgvector column width and the
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
