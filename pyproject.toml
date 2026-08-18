@@ -28,16 +28,19 @@ opentelemetry-api = "^1.27.0"
 opentelemetry-sdk = "^1.27.0"
 opentelemetry-exporter-otlp-proto-http = "^1.27.0"
 bcrypt = "3.2.2"
-numpy = "<2.0.0"
+# Unpinned since the torch images left (PR #54): the <2 ceiling existed for the
+# local Paddle/Torch OCR stack, and paddle 3.x declares numpy with no upper bound.
+# numpy 2.x is also what onnxruntime 1.28 and every current wheel builds against.
+numpy = "^2.0.0"
 pypdf = "^6.15.0"
 python-docx = "^1.1.2"
 openpyxl = "^3.1.5"
 python-pptx = "^1.0.2"
 pillow = "^12.0.0"
 pymupdf = "^1.25.3"
-# 0.0.2 is the last MarkItDown release compatible with this project's
-# NumPy 1.x constraint (required by the local Paddle/Torch OCR stack).
-markitdown = "0.0.2"
+# The 0.0.2 pin existed only for the numpy 1.x ceiling above; current releases
+# ride numpy 2.
+markitdown = "^0.1.7"
 
 # Scanned-document OCR. NOT installed by default: only the WORKER extracts text from
 # scanned files, and paddle is ~1 GB. src/domain/source_extraction.py imports it lazily,

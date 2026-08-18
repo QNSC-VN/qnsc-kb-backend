@@ -64,18 +64,23 @@ module "ecr" {
   # Lower than the module defaults (30 releases / 20 builds), but for a narrower reason
   # than "the images are big".
   #
-  # These images ARE big — the api and worker carry torch, paddle and the baked bge-m3
-  # weights — but ECR bills unique LAYERS, and the `deps` and `model-cache` stages are
-  # shared across all three images and unchanged between builds unless poetry.lock or the
-  # model changes. The per-build delta is the application COPY layer, which is small. So
-  # steady-state storage is roughly one ~4-5 GB layer set plus deltas, and multiplying
-  # image size by keep-count overstates it by an order of magnitude.
+  # These images ARE big — the worker carries paddle and every image that embeds carries
+  # the ~2.2 GB fp32 ONNX export (PR #54 dropped torch and the separate weight bake; the
+  # api and worker went from ~3.0/3.3 GB to 1.5/1.8 GB) — but ECR bills unique LAYERS,
+  # and the `deps` stages are shared across all three images and unchanged between builds
+  # unless poetry.lock or the model changes. The per-build delta is the application COPY
+  # layer, which is small. So steady-state storage is roughly one ~2-3 GB layer set plus
+  # deltas, and multiplying image size by keep-count overstates it by an order of
+  # magnitude.
   #
   # What these counts actually insure against is the case where that assumption breaks: a
   # dependency bump invalidates the shared layers, and every build after it carries its
-  # own multi-GB copy until the old ones expire. 10 and 10 bound that without losing
+  # own multi-GB copy until the old ones expire. 10 and 5 bound that without losing
   # anything anyone reads — a build older than the last ten is not something we roll back
-  # to, we rebuild.
+  # to, we rebuild. (The one period that assumption DID break was the ONNX migration
+  # itself: three distinct layer generations in two days — torch-era, transition with
+  # both runtimes, onnx-only — and the torch-era tags age out of these counts on their
+  # own within a few more builds.)
   #
   # Re-run `aws ecr start-lifecycle-policy-preview` (a dry run) before changing these; it
   # is the only way to see what a policy will delete.
