@@ -64,6 +64,14 @@ services:
         condition: service_healthy
 
   worker:
+    # NOTE (arm64 / Apple Silicon): the worker target CANNOT build locally on arm64 —
+    # paddlepaddle publishes no aarch64 wheel, and poetry install fails inside the
+    # deps-onnx-ocr stage. CI builds x86_64 and that is what runs on Fargate. For local
+    # work that needs the worker, build emulated with
+    #   docker build --platform linux/amd64 --target worker .
+    # (slow under Rosetta) or run the worker from the api image, which carries celery
+    # and the full embedding stack and fails only on scanned-file OCR — the api never
+    # OCRs. Pre-existing, independent of the ONNX migration.
     build:
       context: .
       dockerfile: Dockerfile
