@@ -172,6 +172,7 @@ locals {
 
     { name = "EMBEDDING_MODEL", value = var.embedding_model },
     { name = "EMBEDDING_VERSION", value = var.embedding_version },
+    { name = "EMBEDDING_RUNTIME", value = var.embedding_runtime },
     { name = "GEMINI_MODEL", value = var.gemini_model },
 
     // localhost is correct under awsvpc: every container in a task shares one network

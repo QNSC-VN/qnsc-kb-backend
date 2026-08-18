@@ -292,6 +292,21 @@ variable "embedding_version" {
   description = "Stamped on every chunk, so a re-embed can be identified after the fact. Change it whenever embedding_model or the dimension changes."
 }
 
+variable "embedding_runtime" {
+  type        = string
+  default     = "torch"
+  description = <<-EOT
+    HOW the embedding model executes — orthogonal to embedding_model. "torch" is
+    sentence-transformers, the reference implementation the stored corpus was embedded
+    with. "onnx" runs the same weights on the fp32 ONNX export baked into the image
+    (int8 was measured and rejected: cosine 0.908-0.987 against the gate's 0.999).
+    Parity is proven at cosine 1.000000 by tests/unit/test_embedding_backends.py, so
+    switching is a config change, not a re-embed — but flip the api and the worker
+    together, and keep "torch" available as a rollback until the ml dependency group
+    is dropped from the images.
+  EOT
+}
+
 variable "gemini_model" {
   type        = string
   default     = "gemini-flash-lite-latest"

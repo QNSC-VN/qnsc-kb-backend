@@ -33,9 +33,15 @@ keyword-only — no error, just worse answers.
 
 ## Two separate problems
 
-1. **The weights are baked twice.** The bge-m3 repo ships both `pytorch_model.bin` and
-   `model.safetensors`, and our bake pulls both — 4.4 GB where 2.2 GB would do, in both images.
-   This has nothing to do with ONNX and is fixed with an `allow_patterns` argument on the download.
+1. ~~**The weights are baked twice.**~~ — corrected and FIXED 2026-08-17. The bge-m3 repo
+   does **not** ship `model.safetensors` (checked against the hub file list); its weights are
+   `pytorch_model.bin` only. The measured second ~2 GB copy was the Xet transfer chunk cache
+   sitting beside the blobs. The fix is still the one sketched here, plus one thing it turned
+   out to need: the bake downloads an explicit file list into `/opt/huggingface/model`, and the
+   runtime loads **that directory** (`EMBEDDING_TORCH_DIR` in `src/core/config.py`), because
+   loading by repo id re-runs the hub's broad download globs and could re-grow the cache from a
+   serving task. Also excluded by the list: the repo's `onnx/` export (~2.3 GB) and the
+   colbert/sparse heads. Expected: 4.35 GB → 2.3 GB of model cache in both images.
 
 2. **torch costs 695 MB for a forward pass.** It is a training framework; we only ever run inference.
 
@@ -64,6 +70,13 @@ results. Two specific hazards:
   ONNX export does not carry it, so it must be stated explicitly.
 - **Normalisation.** The tuned thresholds (`VECTOR_DISTANCE_THRESHOLD`, `RAG_MIN_RELEVANCE_SCORE`)
   assume unit-length vectors.
+- **Truncation.** Found 2026-08-17 during audit, after the doc was written:
+  `sentence-transformers` truncates at the model's own `max_seq_length` (8192 for bge-m3), while
+  the ONNX tokenizer truncated at `EMBEDDING_MAX_TOKENS=512`. Every original parity input sat
+  under 512 tokens, so the gate was blind to the divergence — and real chunks (~1500 chars of
+  Vietnamese ≈ 700-1000 tokens) are over it. The parity test now carries a >512-token case, and
+  `EMBEDDING_MAX_TOKENS` moved to 8192 to match the torch side. The corpus compatibility rule
+  decided which side moves: the stored vectors were computed full-length.
 
 The gate is already in the repo. `tests/unit/test_embedding_backends.py` asserts **cosine similarity
 ≥ 0.999** between the torch and ONNX backends on the same input, including a Vietnamese case. It
@@ -83,12 +96,30 @@ Default remains `torch`, so nothing has changed in behaviour yet.
 
 ## The ask
 
-1. **Fix the duplicate weights** with `allow_patterns` — independent of ONNX, ~2 GB off both images,
-   near-zero risk. Worth doing on its own even if ONNX is never adopted.
-2. Add a Dockerfile stage that exports the model and int8-quantises it, and install the `onnx` group:
-   `optimum-cli export onnx --model BAAI/bge-m3 --task feature-extraction $EMBEDDING_ONNX_DIR`
-   (the directory needs `model.onnx` and `tokenizer.json`).
-3. **Run the parity test in that image.** This is the decision point.
+1. ~~**Fix the duplicate weights** with `allow_patterns`~~ — DONE 2026-08-17; see the corrected
+   diagnosis under "Two separate problems". Independent of ONNX, ~2 GB off both images,
+   near-zero risk.
+2. ~~Add a Dockerfile stage that exports the model and int8-quantises it, and install the `onnx`
+   group~~ — DONE 2026-08-17. The `embedding-export` build stage (build-only, `optimum[exporters]`
+   pinned at 1.27.0, never shipped) exports fp32 then quantises to int8 with `--avx2` — Fargate's
+   x86 fleet cannot be relied on for AVX-512/VNNI. The artefact lands in `/opt/embedding-onnx`
+   behind `BAKE_EMBEDDING_ONNX`, with the same mtime-normalisation discipline as the torch bake
+   so the layer stays byte-reproducible. `onnx` group added to both the api and worker dependency
+   stages; `ml` stays until the flip (the parity test needs both runtimes in the image).
+3. ~~**Run the parity test in that image.**~~ — RUN 2026-08-17 and **PASSED: 14/14**, cosine ≥ 0.999
+   on every case including the long-input one. The decision it guards resolved like this: **int8 was
+   rejected by measurement, fp32 ships.** Both dynamic-quantisation recipes were compared against
+   the torch backend inside the built image — per-tensor `--avx2` cosine 0.972-0.981,
+   `--per_channel` 0.981-0.987 with the long input collapsing to 0.908 — while the fp32 export
+   measures **1.000000** on every case. bge-m3's XLM-R stack does not survive weight quantisation
+   at retrieval-grade fidelity. Consequences: the artefact stays ~2.2 GB (not ~600 MB), so the
+   image lands near 2.7 GB rather than under 1 GB and the api floor is ~2048 MB rather than
+   1024 — but torch, transformers and scipy still leave the image entirely, the weights exist
+   once instead of twice, and the model loads in ~3 s instead of ~13 s. int8 stays parked until
+   a full corpus re-embed (an `EMBEDDING_VERSION` bump) makes its error self-consistent.
+   Measured in the image (2026-08-17): onnx warm-up 3.2 s / peak RSS 1.53 GB / query 116 ms;
+   torch warm-up 8.4 s / peak RSS 2.03 GB. The torch path still loads from the baked snapshot,
+   so `EMBEDDING_RUNTIME=torch` remains a working rollback until the `ml` group is dropped.
 4. If parity holds: set `EMBEDDING_RUNTIME=onnx`, drop the `ml` group from the api image, re-measure
    RSS, and right-size both tasks.
 
