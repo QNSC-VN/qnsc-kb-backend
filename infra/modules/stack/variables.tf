@@ -294,16 +294,17 @@ variable "embedding_version" {
 
 variable "embedding_runtime" {
   type        = string
-  default     = "torch"
+  default     = "onnx"
   description = <<-EOT
-    HOW the embedding model executes — orthogonal to embedding_model. "torch" is
-    sentence-transformers, the reference implementation the stored corpus was embedded
-    with. "onnx" runs the same weights on the fp32 ONNX export baked into the image
-    (int8 was measured and rejected: cosine 0.908-0.987 against the gate's 0.999).
-    Parity is proven at cosine 1.000000 by tests/unit/test_embedding_backends.py, so
-    switching is a config change, not a re-embed — but flip the api and the worker
-    together, and keep "torch" available as a rollback until the ml dependency group
-    is dropped from the images.
+    HOW the embedding model executes — orthogonal to embedding_model. "onnx" runs the
+    weights on the fp32 ONNX export baked into the image; parity against the torch
+    reference was proven at cosine 1.000000 by tests/unit/test_embedding_backends.py,
+    and int8 was measured and rejected (0.908-0.987 against the gate's 0.999). The
+    default is onnx because NO SHIPPED IMAGE INSTALLS THE ML GROUP — an environment
+    that sets "torch" gets a clean EmbeddingUnavailable at load, since the torch
+    backend now exists only in a local checkout with `poetry install --with ml`,
+    exactly what the parity gate re-enters when a model change needs re-proving.
+    A hosted EMBEDDING_MODEL ignores this setting entirely.
   EOT
 }
 

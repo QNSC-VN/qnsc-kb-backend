@@ -122,13 +122,6 @@ class Settings(BaseSettings):
     # ~2 GB less in every image that embeds. Same vectors either way — the parity test
     # in tests/unit/test_embedding_backends.py is what proves that for a given model.
     EMBEDDING_RUNTIME: str = "torch"
-    # The baked sentence-transformers snapshot, set by the Dockerfile when the weights are
-    # baked. Loading by repo id goes through the hub: broad download globs and the Xet
-    # chunk cache measured 4.35 GB of cache against 2.27 GB of weights in develop, and
-    # the load can reach the network from a serving task. A local directory is exact:
-    # what was baked is what loads. Empty (local dev, no bake) falls back to the repo id
-    # and the developer's own HF cache.
-    EMBEDDING_TORCH_DIR: str = ""
     # Where the baked ONNX export lives: model.onnx + tokenizer.json.
     EMBEDDING_ONNX_DIR: str = "/opt/embedding-onnx"
     # bge-* are CLS-pooled. An ONNX export does not carry the pooling config that
