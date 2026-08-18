@@ -70,14 +70,17 @@ module "stack" {
   tunnel_enabled = true
 
   // ── Sizing ─────────────────────────────────────────────────────────────────
-  // 4096 MB because the embedding model is LOCAL again and the API loads it at startup
-  // to embed the search query. BAAI/bge-m3 is XLM-R-large: 568M parameters, ~2.27 GB of
-  // fp32 weights, and torch on top. At the previous 1024 MB the load failed and the API
-  // fell back to keyword-only search — which returns results, so nothing looked broken.
+  // 2048 MB, sized from MEASUREMENT on EMBEDDING_RUNTIME=onnx (PR #51), not arithmetic:
+  // the task held a steady 1,569 MB (38.3% of the 4096 it was given) across the whole
+  // day it ran after the flip — the fp32 ONNX session resident, torch NOT loaded — and
+  // a search request adds ~460 ms of one short query through it. 2048 leaves ~30%
+  // headroom over that floor.
   //
-  // 512 CPU caps a Fargate task at 4096 MB, so this is the ceiling at this vCPU size. If
-  // the model needs more, raise CPU first. PR #23 (ONNX runtime) is what brings this
-  // number back down: same model, no torch, roughly half the resident set.
+  // The 4096 before this was the torch floor: the model plus the framework, sized when
+  // a 1024 task failed the load and silently fell back to keyword-only search. ONNX is
+  // what bought the headroom back — if this ever needs raising again, raise it on a
+  // CloudWatch MemoryUtilization graph, not on a hunch, and remember 512 CPU caps a
+  // task at 4096 MB.
   //
   // Spot with a floor of ZERO, and autoscaling off. Develop is exercised by CI deploys
   // and occasional manual checks, so paying for a task around the clock buys nothing.
@@ -90,26 +93,32 @@ module "stack" {
   // and a floor of 1 instead would undo the scale-to-zero within minutes.
   api = {
     cpu                = 512
-    memory             = 4096
+    memory             = 2048
     min_count          = 0
     max_count          = 2
     enable_autoscaling = false
     use_spot           = true
   }
 
-  // Three containers share this task, and container limits are carved OUT of the total:
-  // clamav 1024 (its signature database), beat 256, leaving ~768 for the Celery worker.
+  // Three containers share this task. Two carry hard container limits carved out of the
+  // task total — beat 256, and clamav 2048 (its signature database is ~2 GB resident;
+  // see the sizing post-mortem in the module) — so 2,304 MB is reserved against the
+  // task and the Celery worker itself runs unlimited, bounded only by the task level.
   //
-  // Back to 6144 with embeddings local: the worker loads the same ~2.27 GB bge-m3 model to
-  // embed chunks, on top of clamav's 1024 and beat's 256, and PaddleOCR is invoked per
-  // scanned file. 1024 CPU because 512 caps a task at 4096 MB, which no longer fits.
-  // If OCR of large scans starts failing, raise this on evidence from a killed task.
+  // 4096, down from 6144 on the same ONNX evidence. Measured idle on the new task:
+  // 1,278 MB total (clamav + beat + worker base, model not yet loaded). The embedding
+  // session loads lazily on the first chunk and adds ~1.5 GB (the api holds the
+  // identical session at 1,569 MB total), so ~2.8 GB steady while embedding, and
+  // PaddleOCR is invoked per scanned file on top of that. 4096 leaves ~1.2 GB for the
+  // OCR spike. 1024 CPU because 512 caps a task at 4096 MB — this is now the floor,
+  // not the ceiling, and the first large scanned-file ingest is the thing to watch: if
+  // it dies, raise this on the evidence of the killed task.
   //
   // max_count is 1 and cannot be raised while beat lives here — two beat containers
   // double every scheduled job. The stack module enforces that with a validation.
   worker = {
     cpu                = 1024
-    memory             = 6144
+    memory             = 4096
     min_count          = 0
     max_count          = 1
     enable_autoscaling = false
