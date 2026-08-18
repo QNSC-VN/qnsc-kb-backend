@@ -218,24 +218,38 @@ module "stack" {
   // 08:00 rather than 09:00 because the database needs those minutes and the API tasks
   // then have to pass a health check, so the environment is serving before the working
   // day rather than during its first minutes.
-  // WEEKDAYS ONLY (was `* * ?`, daily), matching rally's develop stack.
+  // NO `wake_schedule`, deliberately. qnsc-kb develop is ON DEMAND: nothing on a timer
+  // brings it up, and the idle passes above keep putting it back down.
   //
-  // Weekend availability was bought when it was believed to cost ~$2.50/mo. Measured from
-  // Cost Explorer across both develop environments — unblended cost over usage quantity,
-  // 2026-08-01..16 — the weekend share of develop RDS and Fargate is ~$10.42/mo. Sound at
-  // $2.50, not at four times that against a $100/mo target for the account.
+  // This is the same shape production runs — idle without wake — and the stack module's
+  // validation allows it explicitly ("idle without wake is fine — that is production
+  // today"). The reverse, wake without idle, is what it forbids.
   //
-  // Develop is DOWN Saturday and Sunday unless someone deploys, and that path is
-  // unchanged and automatic: the `wake` job in qnsc-ci's backend-deploy reusable starts
-  // RDS and both services before the deploy proceeds. Weekend work costs a few minutes
-  // waiting, not a manual step.
+  // WHAT WAKES IT: a deploy, automatically. The `wake` job in qnsc-ci's backend-deploy
+  // reusable runs `ensure-environment-awake` before the build lands — it starts the RDS
+  // instance and scales api and worker back up. So working on qnsc-kb costs a few minutes
+  // waiting on the first deploy of the day, not a manual step and not a support request.
+  // `aws rds start-db-instance` by hand works too if you want it warm before you push.
   //
-  // CELERY NOTE, specific to this product: the beat schedule does not fire while develop
-  // is down, so a weekend now passes with no periodic tasks at all. That is the same trade
-  // the nightly stop already made (see idle_schedule above) — the outbox is a queue, so
-  // rows are replayed at the next wake rather than lost — just over two days instead of
-  // eight hours. Production does not idle and is unaffected.
-  wake_schedule = "cron(0 8 ? * MON-FRI *)"
+  // WHY THIS AND NOT `tofu destroy`. Destroying the stack would save the last $3.96 as
+  // well, and it is the wrong trade: `secrets_recovery_window_days = 0` above means a
+  // destroy deletes all 12 secrets IMMEDIATELY with no recovery window, so every rebuild
+  // means re-pasting 12 values by hand and losing the dev database. On-demand is worth
+  // having; irrecoverable is not.
+  //
+  // WHAT IT SAVES, and what it does not. Only this product's own hours: RDS instance time
+  // (~$5.97/mo at a weekday schedule) and Fargate (~$5.80). The $2.76 of gp3 storage and
+  // $1.20 of secrets bill whether the instance runs or not, so ~$3.96/mo is the floor
+  // while the environment exists at all.
+  //
+  // It saves NOTHING on the shared dev platform, and that is worth stating so nobody
+  // expects it to: the shared Valkey node ($15.45) cannot be stopped — ElastiCache has no
+  // stopped state — and the shared NAT instance ($3.86) must stay up for rally develop,
+  // which still wakes every weekday. Those are properties of the runtime layer, not of
+  // this stack.
+  //
+  // RESTORE IT by putting the line back, if qnsc-kb returns to daily active development:
+  //   wake_schedule = "cron(0 8 ? * MON-FRI *)"
 
   // Hosted. Fixes EMBEDDING_DIMENSION at 768, which is the pgvector column width and the
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
