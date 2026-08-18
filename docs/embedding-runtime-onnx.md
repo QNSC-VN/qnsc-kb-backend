@@ -120,8 +120,17 @@ Default remains `torch`, so nothing has changed in behaviour yet.
    Measured in the image (2026-08-17): onnx warm-up 3.2 s / peak RSS 1.53 GB / query 116 ms;
    torch warm-up 8.4 s / peak RSS 2.03 GB. The torch path still loads from the baked snapshot,
    so `EMBEDDING_RUNTIME=torch` remains a working rollback until the `ml` group is dropped.
-4. If parity holds: set `EMBEDDING_RUNTIME=onnx`, drop the `ml` group from the api image, re-measure
-   RSS, and right-size both tasks.
+4. ~~If parity holds: set `EMBEDDING_RUNTIME=onnx`, drop the `ml` group from the api image, re-measure
+   RSS, and right-size both tasks~~ — DONE across 2026-08-18 (PRs #51, #53, and the ml-drop). Develop
+   flipped to `onnx` and verified live: query embedding at dimension 1024 against the torch-embedded
+   corpus, a synonym query with zero lexical overlap retrieving the document (semantic, not keyword),
+   `/ai/ask` grounded with a citation, 0 errors. Tasks right-sized on that measurement (api
+   4096→2048, worker 6144→4096; api steady at 1,569 MB = 76.8% of 2048). Then the `ml` group left
+   the images: torch, transformers and scipy are gone from every shipped image, the module's
+   `embedding_runtime` default is `onnx`, and the torch backend survives only in a local checkout
+   with `poetry install --with ml` — which is the state the parity gate re-enters when a model
+   change needs re-proving. **Rollback from here is an image tag**, not an env flip: redeploy the
+   last image built with the `ml` group and set `embedding_runtime = "torch"` alongside it.
 
 Expect two or three build iterations; each is roughly 25 minutes.
 

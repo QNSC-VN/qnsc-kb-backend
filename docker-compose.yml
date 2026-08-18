@@ -39,21 +39,15 @@ services:
       dockerfile: Dockerfile
       target: api
       args:
-        # Local builds skip both bakes — ~2.3 GB of torch weights and ~2.2 GB of ONNX
-        # export — so a rebuild stays quick. The torch weights are fetched on first use
-        # into the hfcache volume below instead, once for all three services; the ONNX
+        # Local builds skip the ~2.2 GB ONNX copy so a rebuild stays quick. The
         # artefact cannot be fetched (it is produced by an export), so testing
         # EMBEDDING_RUNTIME=onnx locally means building without this override.
-        BAKE_EMBEDDING_MODEL: "false"
         BAKE_EMBEDDING_ONNX: "false"
     ports:
       - "8000:8000"
     volumes:
       - .:/app
       - ./connector_sources:/app/storage/connectors
-      # BAKE_EMBEDDING_MODEL=false above means the weights are downloaded on first use.
-      # Without this volume that is ~2.3 GB again on every `docker compose up --build`.
-      - hfcache:/opt/huggingface
     # Restrict reloads to application source.  Test runs and Celery's local
     # schedule database must not restart the API and reload the embedding
     # model during ordinary local development.
@@ -75,11 +69,9 @@ services:
       dockerfile: Dockerfile
       target: worker
       args:
-        BAKE_EMBEDDING_MODEL: "false"
         BAKE_EMBEDDING_ONNX: "false"
     volumes:
       - .:/app
-      - hfcache:/opt/huggingface
     command: celery -A src.workers.celery_app worker --pool=solo --concurrency=1 --prefetch-multiplier=1 --loglevel=info
     mem_limit: 2g
     mem_reservation: 512m
@@ -116,11 +108,9 @@ services:
       dockerfile: Dockerfile
       target: worker
       args:
-        BAKE_EMBEDDING_MODEL: "false"
         BAKE_EMBEDDING_ONNX: "false"
     volumes:
       - .:/app
-      - hfcache:/opt/huggingface
     command: celery -A src.workers.celery_app beat --loglevel=info
     mem_limit: 256m
     mem_reservation: 64m
@@ -146,4 +136,3 @@ services:
 volumes:
   pgdata:
   redisdata:
-  hfcache:

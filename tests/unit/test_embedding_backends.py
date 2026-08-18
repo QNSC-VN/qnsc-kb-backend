@@ -21,7 +21,7 @@ import pytest
 
 from src.core.config import settings
 from src.lib import embeddings
-from src.lib.embeddings import base, local_torch
+from src.lib.embeddings import base
 
 
 class FakeProvider:
@@ -106,23 +106,6 @@ def test_a_hosted_model_ignores_the_local_runtime(monkeypatch):
     monkeypatch.setattr(embeddings.settings, "EMBEDDING_RUNTIME", "onnx")
 
     assert embeddings.resolve_provider().name == "hosted"
-
-
-def test_a_baked_directory_is_loaded_instead_of_the_repo_id(monkeypatch, tmp_path):
-    """The bake downloads one copy of the weights; a directory load cannot fetch the
-    duplicate pytorch_model.bin the repo-id path pulls in."""
-    monkeypatch.setattr(local_torch.settings, "EMBEDDING_TORCH_DIR", str(tmp_path))
-
-    assert local_torch._model_source() == str(tmp_path)
-
-
-def test_a_missing_baked_directory_falls_back_to_the_repo_id(monkeypatch):
-    """A bake-less image (BAKE_EMBEDDING_MODEL=false) must behave like a local checkout
-    rather than fail on a directory that was never populated."""
-    monkeypatch.setattr(local_torch.settings, "EMBEDDING_TORCH_DIR", "/no/such/dir")
-    monkeypatch.setattr(local_torch.settings, "EMBEDDING_MODEL", "BAAI/bge-m3")
-
-    assert local_torch._model_source() == "BAAI/bge-m3"
 
 
 def test_mock_short_circuits_without_touching_a_backend(monkeypatch):
