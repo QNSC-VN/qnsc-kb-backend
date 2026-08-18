@@ -21,7 +21,7 @@ import pytest
 
 from src.core.config import settings
 from src.lib import embeddings
-from src.lib.embeddings import base
+from src.lib.embeddings import base, local_torch
 
 
 class FakeProvider:
@@ -108,6 +108,23 @@ def test_a_hosted_model_ignores_the_local_runtime(monkeypatch):
     assert embeddings.resolve_provider().name == "hosted"
 
 
+def test_a_baked_directory_is_loaded_instead_of_the_repo_id(monkeypatch, tmp_path):
+    """The bake downloads one copy of the weights; a directory load cannot fetch the
+    duplicate pytorch_model.bin the repo-id path pulls in."""
+    monkeypatch.setattr(local_torch.settings, "EMBEDDING_TORCH_DIR", str(tmp_path))
+
+    assert local_torch._model_source() == str(tmp_path)
+
+
+def test_a_missing_baked_directory_falls_back_to_the_repo_id(monkeypatch):
+    """A bake-less image (BAKE_EMBEDDING_MODEL=false) must behave like a local checkout
+    rather than fail on a directory that was never populated."""
+    monkeypatch.setattr(local_torch.settings, "EMBEDDING_TORCH_DIR", "/no/such/dir")
+    monkeypatch.setattr(local_torch.settings, "EMBEDDING_MODEL", "BAAI/bge-m3")
+
+    assert local_torch._model_source() == "BAAI/bge-m3"
+
+
 def test_mock_short_circuits_without_touching_a_backend(monkeypatch):
     monkeypatch.setattr(embeddings.settings, "EMBEDDING_MODEL", "mock")
 
@@ -120,6 +137,20 @@ def test_mock_short_circuits_without_touching_a_backend(monkeypatch):
 
 
 # ── Parity ───────────────────────────────────────────────────────────────────
+# The two runtimes truncate at different points: sentence-transformers reads the model's
+# own max_seq_length (8192 for bge-m3), while the ONNX tokenizer truncates at
+# EMBEDDING_MAX_TOKENS (512). Every short input below that threshold passes parity even
+# when the runtimes disagree about truncation — and a real chunk is ~1500 chars of
+# Vietnamese, which is over it. Parity that holds only for short strings proves nothing
+# about the corpus, so the gate needs one input the truncation actually bites. Sized to
+# stay over EMBEDDING_MAX_TOKENS for plausible values of the setting, not just today's.
+_LONG_TEXT = (
+    "Quy trinh xin nghi phep cua nhan vien yeu cau nguoi lam don gui cho truong phong "
+    "truoc it nhat ba ngay lam viec va truong phong phai xac nhan don bang van ban "
+    "truoc khi de nghi nghi phep duoc phe duyet boi phong nhan su. "
+) * 40
+
+
 def _both_backends_available() -> bool:
     try:
         import onnxruntime  # noqa: F401
@@ -139,6 +170,7 @@ def _both_backends_available() -> bool:
     [
         "annual leave policy",
         "Quy trinh xin nghi phep cua nhan vien",  # Vietnamese is the case that decides it
+        _LONG_TEXT,  # over EMBEDDING_MAX_TOKENS — the truncation divergence case
         "",
     ],
 )

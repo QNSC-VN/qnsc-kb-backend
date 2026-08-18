@@ -243,6 +243,9 @@ module "stack" {
   // are points in unrelated spaces.
   embedding_model   = "BAAI/bge-m3"
   embedding_version = "bge-m3-v1"
+  // Parity-gated ONNX flip (cosine 1.000000 vs torch, tests/unit/test_embedding_backends.py).
+  // Rollback until the ml group leaves the images: set back to "torch" and redeploy.
+  embedding_runtime = "onnx"
 
   alarm_emails          = var.alarm_emails
   cloudflare_account_id = var.cloudflare_account_id

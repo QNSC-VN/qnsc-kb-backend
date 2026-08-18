@@ -39,10 +39,13 @@ services:
       dockerfile: Dockerfile
       target: api
       args:
-        # Local builds skip the ~2.3 GB weight bake, so a rebuild stays quick. The
-        # weights are fetched on first use into the hfcache volume below instead, once
-        # for all three services.
+        # Local builds skip both bakes — ~2.3 GB of torch weights and ~2.2 GB of ONNX
+        # export — so a rebuild stays quick. The torch weights are fetched on first use
+        # into the hfcache volume below instead, once for all three services; the ONNX
+        # artefact cannot be fetched (it is produced by an export), so testing
+        # EMBEDDING_RUNTIME=onnx locally means building without this override.
         BAKE_EMBEDDING_MODEL: "false"
+        BAKE_EMBEDDING_ONNX: "false"
     ports:
       - "8000:8000"
     volumes:
@@ -73,6 +76,7 @@ services:
       target: worker
       args:
         BAKE_EMBEDDING_MODEL: "false"
+        BAKE_EMBEDDING_ONNX: "false"
     volumes:
       - .:/app
       - hfcache:/opt/huggingface
@@ -113,6 +117,7 @@ services:
       target: worker
       args:
         BAKE_EMBEDDING_MODEL: "false"
+        BAKE_EMBEDDING_ONNX: "false"
     volumes:
       - .:/app
       - hfcache:/opt/huggingface

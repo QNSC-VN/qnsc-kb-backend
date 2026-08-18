@@ -17,13 +17,18 @@ worse answers. So this is not a drop-in until proven: tests/unit/test_embedding_
 asserts cosine similarity ≥ 0.999 against the torch backend for the same input, and that
 gate is what decides whether the corpus needs re-embedding.
 
-PRODUCING THE ARTEFACTS. The image bakes an export rather than downloading at boot:
+PRODUCING THE ARTEFACTS. The image bakes the export (Dockerfile `embedding-export`
+stage) rather than downloading at boot:
 
-    optimum-cli export onnx --model BAAI/bge-m3 --task feature-extraction $EMBEDDING_ONNX_DIR
-    # optional, and the whole point of the exercise:
-    onnxruntime-tools / optimum quantise the result to int8 in place
+    optimum-cli export onnx --model BAAI/bge-m3 --task feature-extraction /tmp/onnx-fp32
+    optimum-cli onnxruntime quantize --onnx_model /tmp/onnx-fp32 --avx2 \
+        -o /opt/embedding-onnx
 
-`$EMBEDDING_ONNX_DIR` must end up holding `model.onnx` and `tokenizer.json`.
+`$EMBEDDING_ONNX_DIR` must hold `model.onnx` and `tokenizer.json`. fp32 on purpose:
+both int8 dynamic-quantisation recipes were measured against this gate and lost
+(cosine 0.972-0.987 per-tensor and per-channel, with long inputs worse), while fp32
+measures 1.000000. The weights stay ~2.3 GB, but torch and its ~700 MB of
+site-packages leave the image entirely, which is most of the win.
 """
 from __future__ import annotations
 
