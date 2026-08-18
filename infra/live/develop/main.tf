@@ -227,38 +227,32 @@ module "stack" {
   // 08:00 rather than 09:00 because the database needs those minutes and the API tasks
   // then have to pass a health check, so the environment is serving before the working
   // day rather than during its first minutes.
-  // NO `wake_schedule`, deliberately. qnsc-kb develop is ON DEMAND: nothing on a timer
-  // brings it up, and the idle passes above keep putting it back down.
+  // WEEKDAYS ONLY, 08:00 Asia/Ho_Chi_Minh. RESTORED after being removed in #53.
   //
-  // This is the same shape production runs — idle without wake — and the stack module's
-  // validation allows it explicitly ("idle without wake is fine — that is production
-  // today"). The reverse, wake without idle, is what it forbids.
+  // #53 carried in the "make qnsc-kb develop on-demand" change, which deleted this line so
+  // that only a deploy would ever start the environment. That was reverted as a decision,
+  // not as a mistake in #53: develop is a SHARED environment, and on-demand only works if
+  // waking it is trivial. It is not. There is no lightweight wake button — the options are
+  // a full redeploy (15-20 minutes now that this repo builds without a registry cache) or
+  // direct AWS CLI access. A tester or BA opening kb-dev.qnsc.vn on a quiet day would have
+  // found it down with no obvious way to fix that, which is a poor trade for ~$8-12/mo.
   //
-  // WHAT WAKES IT: a deploy, automatically. The `wake` job in qnsc-ci's backend-deploy
-  // reusable runs `ensure-environment-awake` before the build lands — it starts the RDS
-  // instance and scales api and worker back up. So working on qnsc-kb costs a few minutes
-  // waiting on the first deploy of the day, not a manual step and not a support request.
-  // `aws rds start-db-instance` by hand works too if you want it warm before you push.
+  // The saving that mattered was already taken in #46: 112 h/week -> 55 h/week, worth
+  // $18.59/mo across both develop environments. This line is what keeps the remaining
+  // hours PREDICTABLE, which is the property a shared environment needs.
   //
-  // WHY THIS AND NOT `tofu destroy`. Destroying the stack would save the last $3.96 as
-  // well, and it is the wrong trade: `secrets_recovery_window_days = 0` above means a
-  // destroy deletes all 12 secrets IMMEDIATELY with no recovery window, so every rebuild
-  // means re-pasting 12 values by hand and losing the dev database. On-demand is worth
-  // having; irrecoverable is not.
+  // WITHOUT THIS LINE the environment is a one-way door: the idle passes above run daily
+  // and nothing on a timer undoes them, so develop goes down at 19:00 and stays down.
+  // That is correct for production, which is woken by a release, and wrong here.
   //
-  // WHAT IT SAVES, and what it does not. Only this product's own hours: RDS instance time
-  // (~$5.97/mo at a weekday schedule) and Fargate (~$5.80). The $2.76 of gp3 storage and
-  // $1.20 of secrets bill whether the instance runs or not, so ~$3.96/mo is the floor
-  // while the environment exists at all.
+  // 08:00 rather than 09:00 because RDS takes ~7 minutes to reach `available` and the API
+  // tasks then have to pass a health check, so the environment is serving before the
+  // working day rather than during its first minutes.
   //
-  // It saves NOTHING on the shared dev platform, and that is worth stating so nobody
-  // expects it to: the shared Valkey node ($15.45) cannot be stopped — ElastiCache has no
-  // stopped state — and the shared NAT instance ($3.86) must stay up for rally develop,
-  // which still wakes every weekday. Those are properties of the runtime layer, not of
-  // this stack.
-  //
-  // RESTORE IT by putting the line back, if qnsc-kb returns to daily active development:
-  //   wake_schedule = "cron(0 8 ? * MON-FRI *)"
+  // IF qnsc-kb ever goes properly dormant, build a one-click `Wake develop` workflow first
+  // (qnsc-ci already has the `ensure-environment-awake` action; nothing exposes it as a
+  // dispatchable workflow), THEN remove this line. In that order.
+  wake_schedule = "cron(0 8 ? * MON-FRI *)"
 
   // Hosted. Fixes EMBEDDING_DIMENSION at 768, which is the pgvector column width and the
   // HNSW index built by migration 20260802_03 — changing it later means a migration and
