@@ -7,7 +7,7 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = "^0.141.0"
+fastapi = "^0.116.0"
 uvicorn = {extras = ["standard"], version = "^0.30.1"}
 pydantic = {extras = ["email"], version = "^2.7.4"}
 pydantic-settings = "^2.3.4"
@@ -19,24 +19,22 @@ pgvector = "^0.3.1"
 celery = "^5.4.0"
 redis = "^5.0.6"
 boto3 = "^1.35.0"
-pyjwt = {extras = ["crypto"], version = "^2.13.0"}
+python-jose = {extras = ["cryptography"], version = "^3.3.0"}
 passlib = {extras = ["bcrypt"], version = "^1.7.4"}
-python-multipart = "^0.0.32"
+# >=0.0.20 required: CVE-2024-53981 and CVE-2025-52452 (multipart DoS)
+python-multipart = "^0.0.20"
 httpx = "^0.27.0"
 structlog = "^24.2.0"
 opentelemetry-api = "^1.27.0"
 opentelemetry-sdk = "^1.27.0"
 opentelemetry-exporter-otlp-proto-http = "^1.27.0"
 bcrypt = "3.2.2"
-# Unpinned since the torch images left (PR #54): the <2 ceiling existed for the
-# local Paddle/Torch OCR stack, and paddle 3.x declares numpy with no upper bound.
-# numpy 2.x is also what onnxruntime 1.28 and every current wheel builds against.
-numpy = "^2.0.0"
-pypdf = "^6.15.0"
+numpy = "<2.0.0"
+pypdf = "^5.4.0"
 python-docx = "^1.1.2"
 openpyxl = "^3.1.5"
 python-pptx = "^1.0.2"
-pillow = "^12.0.0"
+pillow = "^11.1.0"
 pymupdf = "^1.25.3"
 # 0.0.2 is the last MarkItDown release compatible with this project's
 # NumPy 1.x constraint (required by the local Paddle OCR stack).
@@ -72,9 +70,9 @@ onnxruntime = "1.20.1"
 transformers = "4.48.3"
 
 [tool.poetry.group.dev.dependencies]
-pytest = "^9.1.0"
-pytest-asyncio = "^1.4.0"
-black = "^26.0.0"
+pytest = "^8.2.2"
+pytest-asyncio = "^0.23.7"
+black = "^24.4.2"
 mypy = "^1.10.0"
 
 [build-system]
